@@ -19,7 +19,7 @@ model:
     scale_factor: 0.18215
     use_ema: False
     # for training only
-    # ckpt_path: /mnt/lustre/jywang/code/stable_diffmodels/v2-1_512-ema-pruned.ckpt
+    ckpt_path: /home/tra/StableSR/weiql_training_data/ckpt/v2-1_512-ema-pruned.ckpt
     unfrozen_diff: False
     random_size: False
     time_replace: 1000
@@ -52,7 +52,7 @@ model:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         # for training only
-        # ckpt_path: /mnt/lustre/jywang/code/stable_diffmodels/v2-1_512-ema-pruned.ckpt
+        ckpt_path: /home/tra/StableSR/weiql_training_data/ckpt/v2-1_512-ema-pruned.ckpt
         embed_dim: 4
         monitor: val/rec_loss
         ddconfig:
@@ -100,6 +100,7 @@ model:
         use_scale_shift_norm: False
         resblock_updown: False
         use_new_attention_order: False
+        use_depth_map: True  # 启用depth map处理
 
 
 degradation:
@@ -128,15 +129,16 @@ degradation:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 6
+    batch_size: 2
     num_workers: 6
     wrap: false
     train:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
       params:
         queue_size: 180
-        gt_path: ['/mnt/lustre/share/jywang/dataset/DIV8K/train_HR/', '/mnt/lustre/share/jywang/dataset/df2k_ost/GT/']
+        gt_path: ['/home/tra/StableSR/weiql_training_data/dataset/DIV2K_train_HR/DIV2K_train_HR/']
         face_gt_path: '/mnt/lustre/share/jywang/dataset/FFHQ/1024/'
+        depth_map_path: '/home/tra/StableSR/weiql_training_data/dataset/train_depth_map'  # 添加depth map路径
         num_face: 10000
         crop_size: 512
         io_backend:
@@ -166,7 +168,7 @@ data:
     validation:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
       params:
-        gt_path: /mnt/lustre/share/jywang/dataset/ImageSR/DIV2K/DIV2K_train_HR/
+        gt_path: /home/tra/StableSR/weiql_training_data/dataset/DIV2K_train_HR/DIV2K_train_HR/
         crop_size: 512
         io_backend:
           type: disk
@@ -202,7 +204,7 @@ test_data:
     test:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
       params:
-        gt_path: /mnt/lustre/share/jywang/dataset/ImageSR/DIV2K/DIV2K_train_HR/
+        gt_path: /home/tra/StableSR/weiql_training_data/dataset/DIV2K_train_HR/DIV2K_train_HR/
         crop_size: 512
         io_backend:
           type: disk
@@ -243,5 +245,6 @@ lightning:
 
   trainer:
     benchmark: True
-    max_steps: 800000
+    # max_steps: 800000
+    max_steps: 4500
     accumulate_grad_batches: 4
