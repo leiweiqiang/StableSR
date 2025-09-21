@@ -151,7 +151,7 @@ class SingleImageNPDataset(data.Dataset):
         img_lq = img2tensor(img_lq, bgr2rgb=True, float32=True)
         img_gt = img2tensor(img_gt, bgr2rgb=True, float32=True)
         img_sample = img2tensor(img_sample, bgr2rgb=True, float32=True)
-        latent_np = torch.from_numpy(latent_np).float()
+        latent_np = torch.from_numpy(np.ascontiguousarray(latent_np)).float()
         latent_np = latent_np.to(img_gt.device)
         # normalize
         if self.mean is not None or self.std is not None:

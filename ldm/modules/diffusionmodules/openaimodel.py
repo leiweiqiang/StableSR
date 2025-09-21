@@ -1364,7 +1364,7 @@ class EncoderUNetModelWT(nn.Module):
         use_scale_shift_norm=False,
         resblock_updown=False,
         use_new_attention_order=False,
-        use_depth_map=False,  # 新增参数：是否使用depth map
+        use_edge_map=False,  # 新增参数：是否使用edge map
         *args,
         **kwargs
     ):
@@ -1386,7 +1386,7 @@ class EncoderUNetModelWT(nn.Module):
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
-        self.use_depth_map = use_depth_map
+        self.use_edge_map = use_edge_map
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -1395,10 +1395,10 @@ class EncoderUNetModelWT(nn.Module):
             linear(time_embed_dim, time_embed_dim),
         )
 
-        # Depth map processing branch
-        if self.use_depth_map:
+        # Edge map processing branch
+        if self.use_edge_map:
             # 3x3 conv layers (5 layers, 1024 channels, stride=1)
-            self.depth_conv_3x3 = nn.Sequential(
+            self.edge_conv_3x3 = nn.Sequential(
                 conv_nd(dims, 1, 256, 3, padding=1),  # 1 -> 256
                 nn.ReLU(inplace=True),
                 conv_nd(dims, 256, 512, 3, padding=1),  # 256 -> 512
@@ -1412,7 +1412,7 @@ class EncoderUNetModelWT(nn.Module):
             )
             
             # 4x4 conv layers (5 layers, channels: 512, 256, 128, 64, 32, stride=2)
-            self.depth_conv_4x4 = nn.Sequential(
+            self.edge_conv_4x4 = nn.Sequential(
                 conv_nd(dims, 1024, 512, 4, stride=2, padding=1),  # 1024 -> 512, stride=2
                 nn.ReLU(inplace=True),
                 conv_nd(dims, 512, 256, 4, stride=2, padding=1),  # 512 -> 256, stride=2
@@ -1537,9 +1537,9 @@ class EncoderUNetModelWT(nn.Module):
         """
         self.input_blocks.apply(convert_module_to_f16)
         self.middle_block.apply(convert_module_to_f16)
-        if self.use_depth_map:
-            self.depth_conv_3x3.apply(convert_module_to_f16)
-            self.depth_conv_4x4.apply(convert_module_to_f16)
+        if self.use_edge_map:
+            self.edge_conv_3x3.apply(convert_module_to_f16)
+            self.edge_conv_4x4.apply(convert_module_to_f16)
 
     def convert_to_fp32(self):
         """
@@ -1547,37 +1547,37 @@ class EncoderUNetModelWT(nn.Module):
         """
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
-        if self.use_depth_map:
-            self.depth_conv_3x3.apply(convert_module_to_f32)
-            self.depth_conv_4x4.apply(convert_module_to_f32)
+        if self.use_edge_map:
+            self.edge_conv_3x3.apply(convert_module_to_f32)
+            self.edge_conv_4x4.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps, depth_map=None):
+    def forward(self, x, timesteps, edge_map=None):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
         :param timesteps: a 1-D batch of timesteps.
-        :param depth_map: an [N x 1 x H x W] Tensor of depth map (optional).
+        :param edge_map: an [N x 1 x H x W] Tensor of edge map (optional).
         :return: an [N x K] Tensor of outputs.
         """
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
-        # Process depth map if provided
-        if self.use_depth_map and depth_map is not None:
-            # Process depth map: 2Kx2K -> 64x64x32
-            depth_map = depth_map.type(self.dtype)
-            depth_features = self.depth_conv_3x3(depth_map)  # 3x3 conv layers
-            depth_latent = self.depth_conv_4x4(depth_features)  # 4x4 conv layers with stride=2
-            # depth_latent shape: [N, 32, 64, 64]
+        # Process edge map if provided
+        if self.use_edge_map and edge_map is not None:
+            # Process edge map: 2Kx2K -> 64x64x32
+            edge_map = edge_map.type(self.dtype)
+            edge_features = self.edge_conv_3x3(edge_map)  # 3x3 conv layers
+            edge_latent = self.edge_conv_4x4(edge_features)  # 4x4 conv layers with stride=2
+            # edge_latent shape: [N, 32, 64, 64]
             
-            # Concatenate depth latent with input x
-            # x shape: [N, C, H, W], depth_latent shape: [N, 32, 64, 64]
+            # Concatenate edge latent with input x
+            # x shape: [N, C, H, W], edge_latent shape: [N, 32, 64, 64]
             # We need to ensure they have the same spatial dimensions
-            if x.shape[-2:] != depth_latent.shape[-2:]:
-                # Resize x to match depth_latent spatial dimensions
-                x = F.interpolate(x, size=depth_latent.shape[-2:], mode='bilinear', align_corners=False)
+            if x.shape[-2:] != edge_latent.shape[-2:]:
+                # Resize x to match edge_latent spatial dimensions
+                x = F.interpolate(x, size=edge_latent.shape[-2:], mode='bilinear', align_corners=False)
             
             # Concatenate along channel dimension: [N, C+32, 64, 64]
-            x = torch.cat([x, depth_latent], dim=1)
+            x = torch.cat([x, edge_latent], dim=1)
 
         result_list = []
         results = {}

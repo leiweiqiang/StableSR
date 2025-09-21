@@ -100,7 +100,7 @@ model:
         use_scale_shift_norm: False
         resblock_updown: False
         use_new_attention_order: False
-        use_depth_map: True  # 启用depth map处理
+        use_edge_map: True  # 启用edge map处理
 
 
 degradation:
@@ -133,67 +133,33 @@ data:
     num_workers: 6
     wrap: false
     train:
-      target: basicsr.data.realesrgan_dataset.RealESRGANDataset
+      target: basicsr.data.paired_image_dataset.PairedImageDataset
       params:
-        queue_size: 180
-        gt_path: ['/home/tra/StableSR/weiql_training_data/dataset/DIV2K_train_HR/DIV2K_train_HR/']
-        face_gt_path: '/mnt/lustre/share/jywang/dataset/FFHQ/1024/'
-        depth_map_path: '/home/tra/StableSR/weiql_training_data/dataset/train_depth_map'  # 添加depth map路径
-        num_face: 10000
-        crop_size: 512
-        io_backend:
-          type: disk
-
-        blur_kernel_size: 21
-        kernel_list: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
-        kernel_prob: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
-        sinc_prob: 0.1
-        blur_sigma: [0.2, 1.5]
-        betag_range: [0.5, 2.0]
-        betap_range: [1, 1.5]
-
-        blur_kernel_size2: 11
-        kernel_list2: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
-        kernel_prob2: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
-        sinc_prob2: 0.1
-        blur_sigma2: [0.2, 1.0]
-        betag_range2: [0.5, 2.0]
-        betap_range2: [1, 1.5]
-
-        final_sinc_prob: 0.8
-
+        dataroot_gt: '/home/tra/StableSR/weiql_training_data/dataset/DIV2K_train_HR/DIV2K_train_HR/'
+        dataroot_lq: '/home/tra/StableSR/weiql_training_data/dataset/DIV2K_train_LR/DIV2K_train_LR_bicubic/X4/'
+        dataroot_edge: '/home/tra/StableSR/weiql_training_data/dataset/train_edge_map'  # 添加edge map路径
+        filename_tmpl: '{}'
         gt_size: 512
+        scale: 4
+        phase: train
         use_hflip: True
         use_rot: False
+        io_backend:
+          type: disk
     validation:
-      target: basicsr.data.realesrgan_dataset.RealESRGANDataset
+      target: basicsr.data.paired_image_dataset.PairedImageDataset
       params:
-        gt_path: /home/tra/StableSR/weiql_training_data/dataset/DIV2K_train_HR/DIV2K_train_HR/
-        crop_size: 512
+        dataroot_gt: '/home/tra/StableSR/weiql_training_data/dataset/DIV2K_valid_HR/DIV2K_valid_HR/'
+        dataroot_lq: '/home/tra/StableSR/weiql_training_data/dataset/DIV2K_valid_LR/DIV2K_valid_LR_bicubic/X4/'
+        dataroot_edge: '/home/tra/StableSR/weiql_training_data/dataset/valid_edge_map'  # 添加edge map路径
+        filename_tmpl: '{}'
+        gt_size: 512
+        scale: 4
+        phase: val
+        use_hflip: False
+        use_rot: False
         io_backend:
           type: disk
-
-        blur_kernel_size: 21
-        kernel_list: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
-        kernel_prob: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
-        sinc_prob: 0.1
-        blur_sigma: [0.2, 1.5]
-        betag_range: [0.5, 2.0]
-        betap_range: [1, 1.5]
-
-        blur_kernel_size2: 11
-        kernel_list2: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
-        kernel_prob2: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
-        sinc_prob2: 0.1
-        blur_sigma2: [0.2, 1.0]
-        betag_range2: [0.5, 2.0]
-        betap_range2: [1, 1.5]
-
-        final_sinc_prob: 0.8
-
-        gt_size: 512
-        use_hflip: True
-        use_rot: False
 
 test_data:
   target: main.DataModuleFromConfig
@@ -202,34 +168,19 @@ test_data:
     num_workers: 6
     wrap: false
     test:
-      target: basicsr.data.realesrgan_dataset.RealESRGANDataset
+      target: basicsr.data.paired_image_dataset.PairedImageDataset
       params:
-        gt_path: /home/tra/StableSR/weiql_training_data/dataset/DIV2K_train_HR/DIV2K_train_HR/
-        crop_size: 512
+        dataroot_gt: '/home/tra/StableSR/weiql_training_data/dataset/DIV2K_valid_HR/DIV2K_valid_HR/'
+        dataroot_lq: '/home/tra/StableSR/weiql_training_data/dataset/DIV2K_valid_LR/DIV2K_valid_LR_bicubic/X4/'
+        dataroot_edge: '/home/tra/StableSR/weiql_training_data/dataset/valid_edge_map'  # 添加edge map路径
+        filename_tmpl: '{}'
+        gt_size: 512
+        scale: 4
+        phase: test
+        use_hflip: False
+        use_rot: False
         io_backend:
           type: disk
-
-        blur_kernel_size: 21
-        kernel_list: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
-        kernel_prob: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
-        sinc_prob: 0.1
-        blur_sigma: [0.2, 1.5]
-        betag_range: [0.5, 2.0]
-        betap_range: [1, 1.5]
-
-        blur_kernel_size2: 11
-        kernel_list2: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
-        kernel_prob2: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
-        sinc_prob2: 0.1
-        blur_sigma2: [0.2, 1.0]
-        betag_range2: [0.5, 2.0]
-        betap_range2: [1, 1.5]
-
-        final_sinc_prob: 0.8
-
-        gt_size: 512
-        use_hflip: True
-        use_rot: False
 
 lightning:
   modelcheckpoint:

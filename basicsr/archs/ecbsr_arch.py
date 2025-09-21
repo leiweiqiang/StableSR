@@ -64,10 +64,10 @@ class SeqConv3x3(nn.Module):
 
             # init scale and bias
             scale = torch.randn(size=(self.out_channels, 1, 1, 1)) * 1e-3
-            self.scale = nn.Parameter(torch.FloatTensor(scale))
+            self.scale = nn.Parameter(scale.float())
             bias = torch.randn(self.out_channels) * 1e-3
             bias = torch.reshape(bias, (self.out_channels, ))
-            self.bias = nn.Parameter(torch.FloatTensor(bias))
+            self.bias = nn.Parameter(bias.float())
             # init mask
             self.mask = torch.zeros((self.out_channels, 1, 3, 3), dtype=torch.float32)
             for i in range(self.out_channels):
@@ -86,10 +86,10 @@ class SeqConv3x3(nn.Module):
 
             # init scale and bias
             scale = torch.randn(size=(self.out_channels, 1, 1, 1)) * 1e-3
-            self.scale = nn.Parameter(torch.FloatTensor(scale))
+            self.scale = nn.Parameter(scale.float())
             bias = torch.randn(self.out_channels) * 1e-3
             bias = torch.reshape(bias, (self.out_channels, ))
-            self.bias = nn.Parameter(torch.FloatTensor(bias))
+            self.bias = nn.Parameter(bias.float())
             # init mask
             self.mask = torch.zeros((self.out_channels, 1, 3, 3), dtype=torch.float32)
             for i in range(self.out_channels):

@@ -1,5 +1,6 @@
 from torch.utils import data as data
 from torchvision.transforms.functional import normalize
+import numpy as np
 
 from basicsr.data.data_util import paired_paths_from_folder, paired_paths_from_lmdb, paired_paths_from_meta_info_file, paired_paths_from_meta_info_file_2
 from basicsr.data.transforms import augment, paired_random_crop
@@ -50,6 +51,9 @@ class PairedImageDataset(data.Dataset):
             self.filename_tmpl = opt['filename_tmpl']
         else:
             self.filename_tmpl = '{}'
+            
+        # Load edge map paths if specified
+        self.edge_folder = opt.get('dataroot_edge', None)
 
         if self.io_backend_opt['type'] == 'lmdb':
             self.io_backend_opt['db_paths'] = [self.lq_folder, self.gt_folder]
@@ -75,32 +79,75 @@ class PairedImageDataset(data.Dataset):
         lq_path = self.paths[index]['lq_path']
         img_bytes = self.file_client.get(lq_path, 'lq')
         img_lq = imfrombytes(img_bytes, float32=True)
+        
+        # Ensure both images have the same dimensions
+        if img_gt.shape != img_lq.shape:
+            # Resize lq to match gt dimensions
+            img_lq = cv2.resize(img_lq, (img_gt.shape[1], img_gt.shape[0]), interpolation=cv2.INTER_LINEAR)
+        
+        # Load edge map if available
+        edge_map = None
+        if self.edge_folder is not None:
+            # Extract filename from gt_path and construct edge map path
+            import os
+            gt_filename = os.path.basename(gt_path)
+            edge_filename = os.path.splitext(gt_filename)[0] + '.png'  # Assume edge maps are PNG
+            edge_path = os.path.join(self.edge_folder, edge_filename)
+            
+            try:
+                edge_bytes = self.file_client.get(edge_path, 'edge')
+                edge_map = imfrombytes(edge_bytes, float32=True)
+                # Convert to grayscale if needed and normalize to [0, 1]
+                if len(edge_map.shape) == 3:
+                    edge_map = cv2.cvtColor(edge_map, cv2.COLOR_BGR2GRAY)
+                edge_map = edge_map.astype(np.float32) / 255.0
+                
+                # Ensure edge map has the same dimensions as the GT image
+                if edge_map.shape != img_gt.shape[:2]:
+                    # Resize edge map to match GT image dimensions
+                    edge_map = cv2.resize(edge_map, (img_gt.shape[1], img_gt.shape[0]), interpolation=cv2.INTER_LINEAR)
+                    
+            except (IOError, OSError) as e:
+                # If edge map loading fails, set to None
+                edge_map = None
 
         h, w = img_gt.shape[0:2]
-        # pad
-        if h < self.opt['gt_size'] or w < self.opt['gt_size']:
-            pad_h = max(0, self.opt['gt_size'] - h)
-            pad_w = max(0, self.opt['gt_size'] - w)
-            img_gt = cv2.copyMakeBorder(img_gt, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
-            img_lq = cv2.copyMakeBorder(img_lq, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
+        # pad or resize to ensure consistent dimensions
+        target_size = self.opt['gt_size']
+        if h != target_size or w != target_size:
+            # Resize to target size to ensure consistency
+            img_gt = cv2.resize(img_gt, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+            img_lq = cv2.resize(img_lq, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+            if edge_map is not None:
+                edge_map = cv2.resize(edge_map, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+        
+        # Update dimensions after resize
+        h, w = img_gt.shape[0:2]
 
         # augmentation for training
         if self.opt['phase'] == 'train':
             gt_size = self.opt['gt_size']
             # random crop
             img_gt, img_lq = paired_random_crop(img_gt, img_lq, gt_size, scale, gt_path)
+            # Apply same crop to edge map if available
+            if edge_map is not None:
+                h, w = img_gt.shape[0:2]
+                edge_map = edge_map[:h, :w]
             # flip, rotation
             img_gt, img_lq = augment([img_gt, img_lq], self.opt['use_hflip'], self.opt['use_rot'])
+            # Apply same augmentation to edge map if available
+            if edge_map is not None:
+                edge_map = augment([edge_map], self.opt['use_hflip'], self.opt['use_rot'])[0]
 
         # color space transform
         if 'color' in self.opt and self.opt['color'] == 'y':
             img_gt = bgr2ycbcr(img_gt, y_only=True)[..., None]
             img_lq = bgr2ycbcr(img_lq, y_only=True)[..., None]
 
-        # crop the unmatched GT images during validation or testing, especially for SR benchmark datasets
-        # TODO: It is better to update the datasets, rather than force to crop
+        # Ensure consistent sizing for validation/testing
         if self.opt['phase'] != 'train':
-            img_gt = img_gt[0:img_lq.shape[0] * scale, 0:img_lq.shape[1] * scale, :]
+            # Images are already resized to target_size, so no additional cropping needed
+            pass
 
         # BGR to RGB, HWC to CHW, numpy to tensor
         img_gt, img_lq = img2tensor([img_gt, img_lq], bgr2rgb=True, float32=True)
@@ -109,7 +156,23 @@ class PairedImageDataset(data.Dataset):
             normalize(img_lq, self.mean, self.std, inplace=True)
             normalize(img_gt, self.mean, self.std, inplace=True)
 
-        return {'lq': img_lq, 'gt': img_gt, 'lq_path': lq_path, 'gt_path': gt_path}
+        return_dict = {'lq': img_lq, 'gt': img_gt, 'lq_path': lq_path, 'gt_path': gt_path}
+        
+        # Add edge map to return data if available
+        if edge_map is not None:
+            try:
+                # Convert edge map to tensor: HWC to CHW
+                import torch
+                # Ensure the numpy array is contiguous before converting to tensor
+                edge_map = np.ascontiguousarray(edge_map)
+                edge_map = torch.from_numpy(edge_map).float().unsqueeze(0)  # Add channel dimension
+                return_dict['edge_map'] = edge_map
+            except Exception as e:
+                # If edge map tensor creation fails, skip it
+                print(f"Warning: Failed to create edge map tensor: {e}")
+                edge_map = None
+        
+        return return_dict
 
     def __len__(self):
         return len(self.paths)

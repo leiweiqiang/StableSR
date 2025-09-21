@@ -68,7 +68,7 @@ class USMSharp(torch.nn.Module):
             radius += 1
         self.radius = radius
         kernel = cv2.getGaussianKernel(radius, sigma)
-        kernel = torch.FloatTensor(np.dot(kernel, kernel.transpose())).unsqueeze_(0)
+        kernel = torch.from_numpy(np.ascontiguousarray(np.dot(kernel, kernel.transpose()))).float().unsqueeze_(0)
         self.register_buffer('kernel', kernel)
 
     def forward(self, img, weight=0.5, threshold=10):

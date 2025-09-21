@@ -107,7 +107,7 @@ def imresize(img, scale, antialiasing=True):
         if img.ndim == 2:
             img = img[:, :, None]
             squeeze_flag = True
-        img = torch.from_numpy(img.transpose(2, 0, 1)).float()
+        img = torch.from_numpy(np.ascontiguousarray(img.transpose(2, 0, 1))).float()
     else:
         numpy_type = False
         if img.ndim == 2:
@@ -126,7 +126,7 @@ def imresize(img, scale, antialiasing=True):
                                                                              antialiasing)
     # process H dimension
     # symmetric copying
-    img_aug = torch.FloatTensor(in_c, in_h + sym_len_hs + sym_len_he, in_w)
+    img_aug = torch.zeros(in_c, in_h + sym_len_hs + sym_len_he, in_w, dtype=torch.float32)
     img_aug.narrow(1, sym_len_hs, in_h).copy_(img)
 
     sym_patch = img[:, :sym_len_hs, :]
@@ -139,7 +139,7 @@ def imresize(img, scale, antialiasing=True):
     sym_patch_inv = sym_patch.index_select(1, inv_idx)
     img_aug.narrow(1, sym_len_hs + in_h, sym_len_he).copy_(sym_patch_inv)
 
-    out_1 = torch.FloatTensor(in_c, out_h, in_w)
+    out_1 = torch.zeros(in_c, out_h, in_w, dtype=torch.float32)
     kernel_width = weights_h.size(1)
     for i in range(out_h):
         idx = int(indices_h[i][0])
@@ -148,7 +148,7 @@ def imresize(img, scale, antialiasing=True):
 
     # process W dimension
     # symmetric copying
-    out_1_aug = torch.FloatTensor(in_c, out_h, in_w + sym_len_ws + sym_len_we)
+    out_1_aug = torch.zeros(in_c, out_h, in_w + sym_len_ws + sym_len_we, dtype=torch.float32)
     out_1_aug.narrow(2, sym_len_ws, in_w).copy_(out_1)
 
     sym_patch = out_1[:, :, :sym_len_ws]
@@ -161,7 +161,7 @@ def imresize(img, scale, antialiasing=True):
     sym_patch_inv = sym_patch.index_select(2, inv_idx)
     out_1_aug.narrow(2, sym_len_ws + in_w, sym_len_we).copy_(sym_patch_inv)
 
-    out_2 = torch.FloatTensor(in_c, out_h, out_w)
+    out_2 = torch.zeros(in_c, out_h, out_w, dtype=torch.float32)
     kernel_width = weights_w.size(1)
     for i in range(out_w):
         idx = int(indices_w[i][0])

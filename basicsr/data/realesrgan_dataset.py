@@ -76,14 +76,14 @@ class RealESRGANDataset(data.Dataset):
                     for i in range(len(opt['face_gt_path'])-1):
                         self.paths.extend(sorted([str(x) for x in Path(opt['face_gt_path'][0]).glob('*.'+opt['image_type'])])[:opt['num_face']])
 
-        # Load depth map paths
-        self.depth_paths = []
-        if 'depth_map_path' in opt:
-            if isinstance(opt['depth_map_path'], str):
-                self.depth_paths.extend(sorted([str(x) for x in Path(opt['depth_map_path']).glob('*.'+opt['image_type'])]))
+        # Load edge map paths
+        self.edge_paths = []
+        if 'edge_map_path' in opt:
+            if isinstance(opt['edge_map_path'], str):
+                self.edge_paths.extend(sorted([str(x) for x in Path(opt['edge_map_path']).glob('*.'+opt['image_type'])]))
             else:
-                for depth_path in opt['depth_map_path']:
-                    self.depth_paths.extend(sorted([str(x) for x in Path(depth_path).glob('*.'+opt['image_type'])]))
+                for edge_path in opt['edge_map_path']:
+                    self.edge_paths.extend(sorted([str(x) for x in Path(edge_path).glob('*.'+opt['image_type'])]))
 
         # limit number of pictures for test
         if 'num_pic' in opt:
@@ -149,22 +149,22 @@ class RealESRGANDataset(data.Dataset):
                 retry -= 1
         img_gt = imfrombytes(img_bytes, float32=True)
 
-        # -------------------------------- Load depth map -------------------------------- #
-        depth_map = None
-        if len(self.depth_paths) > 0:
-            # Use same index for depth map, or random if depth map has different length
-            depth_index = index if index < len(self.depth_paths) else random.randint(0, len(self.depth_paths)-1)
-            depth_path = self.depth_paths[depth_index]
+        # -------------------------------- Load edge map -------------------------------- #
+        edge_map = None
+        if len(self.edge_paths) > 0:
+            # Use same index for edge map, or random if edge map has different length
+            edge_index = index if index < len(self.edge_paths) else random.randint(0, len(self.edge_paths)-1)
+            edge_path = self.edge_paths[edge_index]
             try:
-                depth_bytes = self.file_client.get(depth_path, 'depth')
-                depth_map = imfrombytes(depth_bytes, float32=True)
+                edge_bytes = self.file_client.get(edge_path, 'edge')
+                edge_map = imfrombytes(edge_bytes, float32=True)
                 # Convert to grayscale if needed and normalize to [0, 1]
-                if len(depth_map.shape) == 3:
-                    depth_map = cv2.cvtColor(depth_map, cv2.COLOR_BGR2GRAY)
-                depth_map = depth_map.astype(np.float32) / 255.0
+                if len(edge_map.shape) == 3:
+                    edge_map = cv2.cvtColor(edge_map, cv2.COLOR_BGR2GRAY)
+                edge_map = edge_map.astype(np.float32) / 255.0
             except (IOError, OSError) as e:
-                # If depth map loading fails, set to None
-                depth_map = None
+                # If edge map loading fails, set to None
+                edge_map = None
         # filter the dataset and remove images with too low quality
         img_size = os.path.getsize(gt_path)
         img_size = img_size/1024
@@ -182,9 +182,9 @@ class RealESRGANDataset(data.Dataset):
         # -------------------- Do augmentation for training: flip, rotation -------------------- #
         img_gt = augment(img_gt, self.opt['use_hflip'], self.opt['use_rot'])
         
-        # Apply same augmentation to depth map if available
-        if depth_map is not None:
-            depth_map = augment(depth_map, self.opt['use_hflip'], self.opt['use_rot'])
+        # Apply same augmentation to edge map if available
+        if edge_map is not None:
+            edge_map = augment(edge_map, self.opt['use_hflip'], self.opt['use_rot'])
 
         # crop or pad to 400
         # TODO: 400 is hard-coded. You may change it accordingly
@@ -195,8 +195,8 @@ class RealESRGANDataset(data.Dataset):
             pad_h = max(0, crop_pad_size - h)
             pad_w = max(0, crop_pad_size - w)
             img_gt = cv2.copyMakeBorder(img_gt, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
-            if depth_map is not None:
-                depth_map = cv2.copyMakeBorder(depth_map, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
+            if edge_map is not None:
+                edge_map = cv2.copyMakeBorder(edge_map, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
         # crop
         if img_gt.shape[0] > crop_pad_size or img_gt.shape[1] > crop_pad_size:
             h, w = img_gt.shape[0:2]
@@ -206,8 +206,8 @@ class RealESRGANDataset(data.Dataset):
             # top = (h - crop_pad_size) // 2 -1
             # left = (w - crop_pad_size) // 2 -1
             img_gt = img_gt[top:top + crop_pad_size, left:left + crop_pad_size, ...]
-            if depth_map is not None:
-                depth_map = depth_map[top:top + crop_pad_size, left:left + crop_pad_size, ...]
+            if edge_map is not None:
+                edge_map = edge_map[top:top + crop_pad_size, left:left + crop_pad_size, ...]
 
         # ------------------------ Generate kernels (used in the first degradation) ------------------------ #
         kernel_size = random.choice(self.kernel_range)
@@ -260,22 +260,30 @@ class RealESRGANDataset(data.Dataset):
             kernel_size = random.choice(self.kernel_range)
             omega_c = np.random.uniform(np.pi / 3, np.pi)
             sinc_kernel = circular_lowpass_kernel(omega_c, kernel_size, pad_to=21)
-            sinc_kernel = torch.FloatTensor(sinc_kernel)
+            sinc_kernel = torch.from_numpy(np.ascontiguousarray(sinc_kernel)).float()
         else:
             sinc_kernel = self.pulse_tensor
 
         # BGR to RGB, HWC to CHW, numpy to tensor
         img_gt = img2tensor([img_gt], bgr2rgb=True, float32=True)[0]
-        kernel = torch.FloatTensor(kernel)
-        kernel2 = torch.FloatTensor(kernel2)
+        # Ensure numpy arrays are contiguous before converting to tensors
+        kernel = torch.from_numpy(np.ascontiguousarray(kernel)).float()
+        kernel2 = torch.from_numpy(np.ascontiguousarray(kernel2)).float()
 
         return_d = {'gt': img_gt, 'kernel1': kernel, 'kernel2': kernel2, 'sinc_kernel': sinc_kernel, 'gt_path': gt_path}
         
-        # Add depth map to return data if available
-        if depth_map is not None:
-            # Convert depth map to tensor: HWC to CHW
-            depth_map = torch.FloatTensor(depth_map).unsqueeze(0)  # Add channel dimension
-            return_d['depth_map'] = depth_map
+        # Add edge map to return data if available
+        if edge_map is not None:
+            try:
+                # Convert edge map to tensor: HWC to CHW
+                # Ensure the numpy array is contiguous before converting to tensor
+                edge_map = np.ascontiguousarray(edge_map)
+                edge_map = torch.from_numpy(edge_map).float().unsqueeze(0)  # Add channel dimension
+                return_d['edge_map'] = edge_map
+            except Exception as e:
+                # If edge map tensor creation fails, skip it
+                print(f"Warning: Failed to create edge map tensor: {e}")
+                edge_map = None
         
         return return_d
 
