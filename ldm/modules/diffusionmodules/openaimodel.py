@@ -1121,25 +1121,19 @@ class UNetModelDualcondV2(nn.Module):
 
         # Edge map processing branch
         if self.use_edge_map:
-            # 3x3 conv layers (5 layers, 1024 channels, stride=1)
+            # 3x3 conv layers (3 layers, 256 channels, stride=1)
             self.edge_conv_3x3 = nn.Sequential(
-                conv_nd(dims, 1, 256, 3, padding=1),  # 1 -> 256
+                conv_nd(dims, 1, 128, 3, padding=1),  # 1 -> 128
                 nn.ReLU(inplace=True),
-                conv_nd(dims, 256, 512, 3, padding=1),  # 256 -> 512
+                conv_nd(dims, 128, 256, 3, padding=1),  # 128 -> 256
                 nn.ReLU(inplace=True),
-                conv_nd(dims, 512, 768, 3, padding=1),  # 512 -> 768
-                nn.ReLU(inplace=True),
-                conv_nd(dims, 768, 1024, 3, padding=1),  # 768 -> 1024
-                nn.ReLU(inplace=True),
-                conv_nd(dims, 1024, 1024, 3, padding=1),  # 1024 -> 1024
+                conv_nd(dims, 256, 256, 3, padding=1),  # 256 -> 256
                 nn.ReLU(inplace=True),
             )
             
-            # 4x4 conv layers (5 layers, channels: 512, 256, 128, 64, 32, stride=2)
+            # 4x4 conv layers (4 layers, channels: 256, 128, 64, 32, stride=2)
             self.edge_conv_4x4 = nn.Sequential(
-                conv_nd(dims, 1024, 512, 4, stride=2, padding=1),  # 1024 -> 512, stride=2
-                nn.ReLU(inplace=True),
-                conv_nd(dims, 512, 256, 4, stride=2, padding=1),  # 512 -> 256, stride=2
+                conv_nd(dims, 256, 256, 4, stride=2, padding=1),  # 256 -> 256, stride=2
                 nn.ReLU(inplace=True),
                 conv_nd(dims, 256, 128, 4, stride=2, padding=1),  # 256 -> 128, stride=2
                 nn.ReLU(inplace=True),
@@ -1405,9 +1399,13 @@ class UNetModelDualcondV2(nn.Module):
         
         if self.use_edge_map and edge_map is not None:
             print("DEBUG: *** ENTERING EDGE MAP PROCESSING IN UNetModelDualcondV2 ***")
-            # Process edge map: 2Kx2K -> 64x64x32
+            # Process edge map: 512x512 -> 64x64x32
             edge_map = edge_map.type(self.dtype)
+            print(f"DEBUG: *** EDGE MAP SHAPE INFO ***")
             print(f"DEBUG: edge_map shape: {edge_map.shape}")
+            print(f"DEBUG: edge_map dtype: {edge_map.dtype}")
+            print(f"DEBUG: edge_map device: {edge_map.device}")
+            print(f"DEBUG: edge_map min/max values: {edge_map.min().item():.4f} / {edge_map.max().item():.4f}")
             
             edge_features = self.edge_conv_3x3(edge_map)  # 3x3 conv layers
             edge_latent = self.edge_conv_4x4(edge_features)  # 4x4 conv layers with stride=2
@@ -1502,25 +1500,19 @@ class EncoderUNetModelWT(nn.Module):
 
         # Edge map processing branch
         if self.use_edge_map:
-            # 3x3 conv layers (5 layers, 1024 channels, stride=1)
+            # 3x3 conv layers (3 layers, 256 channels, stride=1)
             self.edge_conv_3x3 = nn.Sequential(
-                conv_nd(dims, 1, 256, 3, padding=1),  # 1 -> 256
+                conv_nd(dims, 1, 128, 3, padding=1),  # 1 -> 128
                 nn.ReLU(inplace=True),
-                conv_nd(dims, 256, 512, 3, padding=1),  # 256 -> 512
+                conv_nd(dims, 128, 256, 3, padding=1),  # 128 -> 256
                 nn.ReLU(inplace=True),
-                conv_nd(dims, 512, 768, 3, padding=1),  # 512 -> 768
-                nn.ReLU(inplace=True),
-                conv_nd(dims, 768, 1024, 3, padding=1),  # 768 -> 1024
-                nn.ReLU(inplace=True),
-                conv_nd(dims, 1024, 1024, 3, padding=1),  # 1024 -> 1024
+                conv_nd(dims, 256, 256, 3, padding=1),  # 256 -> 256
                 nn.ReLU(inplace=True),
             )
             
-            # 4x4 conv layers (5 layers, channels: 512, 256, 128, 64, 32, stride=2)
+            # 4x4 conv layers (4 layers, channels: 256, 128, 64, 32, stride=2)
             self.edge_conv_4x4 = nn.Sequential(
-                conv_nd(dims, 1024, 512, 4, stride=2, padding=1),  # 1024 -> 512, stride=2
-                nn.ReLU(inplace=True),
-                conv_nd(dims, 512, 256, 4, stride=2, padding=1),  # 512 -> 256, stride=2
+                conv_nd(dims, 256, 256, 4, stride=2, padding=1),  # 256 -> 256, stride=2
                 nn.ReLU(inplace=True),
                 conv_nd(dims, 256, 128, 4, stride=2, padding=1),  # 256 -> 128, stride=2
                 nn.ReLU(inplace=True),
@@ -1530,10 +1522,13 @@ class EncoderUNetModelWT(nn.Module):
                 nn.ReLU(inplace=True),
             )
 
+        # Adjust input channels if using edge map (adds 32 channels)
+        input_channels = in_channels + 32 if self.use_edge_map else in_channels
+        
         self.input_blocks = nn.ModuleList(
             [
                 TimestepEmbedSequential(
-                    conv_nd(dims, in_channels, model_channels, 3, padding=1)
+                    conv_nd(dims, input_channels, model_channels, 3, padding=1)
                 )
             ]
         )
@@ -1674,9 +1669,13 @@ class EncoderUNetModelWT(nn.Module):
         
         if self.use_edge_map and edge_map is not None:
             print("DEBUG: *** ENTERING EDGE MAP PROCESSING ***")
-            # Process edge map: 2Kx2K -> 64x64x32
+            # Process edge map: 512x512 -> 64x64x32
             edge_map = edge_map.type(self.dtype)
+            print(f"DEBUG: *** EDGE MAP SHAPE INFO ***")
             print(f"DEBUG: edge_map shape: {edge_map.shape}")
+            print(f"DEBUG: edge_map dtype: {edge_map.dtype}")
+            print(f"DEBUG: edge_map device: {edge_map.device}")
+            print(f"DEBUG: edge_map min/max values: {edge_map.min().item():.4f} / {edge_map.max().item():.4f}")
             
             edge_features = self.edge_conv_3x3(edge_map)  # 3x3 conv layers
             edge_latent = self.edge_conv_4x4(edge_features)  # 4x4 conv layers with stride=2

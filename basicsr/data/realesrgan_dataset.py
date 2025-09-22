@@ -202,7 +202,11 @@ class RealESRGANDataset(data.Dataset):
         
         # Apply same augmentation to edge map if available
         if edge_map is not None:
+            print(f"DEBUG: Before augmentation - edge_map shape: {edge_map.shape}, img_gt shape: {img_gt.shape}")
             edge_map = augment(edge_map, self.opt['use_hflip'], self.opt['use_rot'])
+            print(f"DEBUG: After augmentation - edge_map shape: {edge_map.shape}")
+        else:
+            print("DEBUG: No edge map available for augmentation")
 
         # crop or pad to 400
         # TODO: 400 is hard-coded. You may change it accordingly
@@ -215,6 +219,8 @@ class RealESRGANDataset(data.Dataset):
             img_gt = cv2.copyMakeBorder(img_gt, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
             if edge_map is not None:
                 edge_map = cv2.copyMakeBorder(edge_map, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
+                print(f"DEBUG: After padding - edge_map shape: {edge_map.shape}, img_gt shape: {img_gt.shape}")
+        
         # crop
         if img_gt.shape[0] > crop_pad_size or img_gt.shape[1] > crop_pad_size:
             h, w = img_gt.shape[0:2]
@@ -226,7 +232,14 @@ class RealESRGANDataset(data.Dataset):
             img_gt = img_gt[top:top + crop_pad_size, left:left + crop_pad_size, ...]
             if edge_map is not None:
                 edge_map = edge_map[top:top + crop_pad_size, left:left + crop_pad_size, ...]
-
+                print(f"DEBUG: After cropping - edge_map shape: {edge_map.shape}, img_gt shape: {img_gt.shape}")
+        
+        # Ensure edge_map has the same spatial dimensions as img_gt
+        if edge_map is not None:
+            if edge_map.shape[:2] != img_gt.shape[:2]:
+                print(f"DEBUG: Resizing edge_map from {edge_map.shape[:2]} to {img_gt.shape[:2]}")
+                edge_map = cv2.resize(edge_map, (img_gt.shape[1], img_gt.shape[0]), interpolation=cv2.INTER_LINEAR)
+                print(f"DEBUG: After resizing - edge_map shape: {edge_map.shape}")
         # ------------------------ Generate kernels (used in the first degradation) ------------------------ #
         kernel_size = random.choice(self.kernel_range)
         if np.random.uniform() < self.opt['sinc_prob']:

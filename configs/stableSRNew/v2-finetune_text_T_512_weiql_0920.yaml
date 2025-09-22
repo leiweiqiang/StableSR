@@ -19,7 +19,7 @@ model:
     scale_factor: 0.18215
     use_ema: False
     # for training only
-    ckpt_path: /home/tra/stablesr_dataset/ckpt/v2-1_512-ema-pruned.ckpt
+    ckpt_path: /home/tra/stablesr_dataset/ckpt/stablesr_768v_000139.ckpt
     unfrozen_diff: False
     random_size: False
     time_replace: 1000
@@ -234,7 +234,7 @@ test_data:
 lightning:
   modelcheckpoint:
     params:
-      every_n_train_steps: 1500
+      every_n_train_steps: 100
   callbacks:
     image_logger:
       target: main.ImageLogger
@@ -246,5 +246,5 @@ lightning:
   trainer:
     benchmark: True
     # max_steps: 800000
-    max_steps: 4500
+    max_steps: 500
     accumulate_grad_batches: 4
