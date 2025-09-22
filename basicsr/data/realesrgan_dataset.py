@@ -79,11 +79,23 @@ class RealESRGANDataset(data.Dataset):
         # Load edge map paths
         self.edge_paths = []
         if 'edge_map_path' in opt:
+            print(f"DEBUG: edge_map_path configured: {opt['edge_map_path']}")
             if isinstance(opt['edge_map_path'], str):
-                self.edge_paths.extend(sorted([str(x) for x in Path(opt['edge_map_path']).glob('*.'+opt['image_type'])]))
+                edge_files = list(Path(opt['edge_map_path']).glob('*.'+opt['image_type']))
+                print(f"DEBUG: Found {len(edge_files)} edge map files with pattern *.{opt['image_type']}")
+                self.edge_paths.extend(sorted([str(x) for x in edge_files]))
             else:
                 for edge_path in opt['edge_map_path']:
-                    self.edge_paths.extend(sorted([str(x) for x in Path(edge_path).glob('*.'+opt['image_type'])]))
+                    edge_files = list(Path(edge_path).glob('*.'+opt['image_type']))
+                    print(f"DEBUG: Found {len(edge_files)} edge map files in {edge_path}")
+                    self.edge_paths.extend(sorted([str(x) for x in edge_files]))
+        else:
+            print("DEBUG: No edge_map_path configured")
+        print(f"DEBUG: Total edge map paths loaded: {len(self.edge_paths)}")
+        if len(self.edge_paths) > 0:
+            print(f"DEBUG: First few edge map paths: {self.edge_paths[:3]}")
+        else:
+            print("DEBUG: No edge map files found - check if edge_map_path exists and contains .png files")
 
         # limit number of pictures for test
         if 'num_pic' in opt:
@@ -151,10 +163,12 @@ class RealESRGANDataset(data.Dataset):
 
         # -------------------------------- Load edge map -------------------------------- #
         edge_map = None
+        print(f"DEBUG: Edge map loading - self.edge_paths length: {len(self.edge_paths)}")
         if len(self.edge_paths) > 0:
             # Use same index for edge map, or random if edge map has different length
             edge_index = index if index < len(self.edge_paths) else random.randint(0, len(self.edge_paths)-1)
             edge_path = self.edge_paths[edge_index]
+            print(f"DEBUG: Loading edge map from: {edge_path}")
             try:
                 edge_bytes = self.file_client.get(edge_path, 'edge')
                 edge_map = imfrombytes(edge_bytes, float32=True)
@@ -162,9 +176,13 @@ class RealESRGANDataset(data.Dataset):
                 if len(edge_map.shape) == 3:
                     edge_map = cv2.cvtColor(edge_map, cv2.COLOR_BGR2GRAY)
                 edge_map = edge_map.astype(np.float32) / 255.0
+                print(f"DEBUG: Successfully loaded edge map with shape: {edge_map.shape}")
             except (IOError, OSError) as e:
                 # If edge map loading fails, set to None
+                print(f"DEBUG: Failed to load edge map: {e}")
                 edge_map = None
+        else:
+            print("DEBUG: No edge map paths available")
         # filter the dataset and remove images with too low quality
         img_size = os.path.getsize(gt_path)
         img_size = img_size/1024
@@ -280,11 +298,15 @@ class RealESRGANDataset(data.Dataset):
                 edge_map = np.ascontiguousarray(edge_map)
                 edge_map = torch.from_numpy(edge_map).float().unsqueeze(0)  # Add channel dimension
                 return_d['edge_map'] = edge_map
+                print(f"DEBUG: Dataset returning edge_map with shape: {edge_map.shape}")
             except Exception as e:
                 # If edge map tensor creation fails, skip it
                 print(f"Warning: Failed to create edge map tensor: {e}")
                 edge_map = None
+        else:
+            print("DEBUG: Dataset not returning edge_map (edge_map is None)")
         
+        print(f"DEBUG: Dataset returning keys: {list(return_d.keys())}")
         return return_d
 
     def __len__(self):

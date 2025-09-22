@@ -457,7 +457,47 @@ class ResBlockDual(TimestepBlockDual):
         else:
             h = h + emb_out
             h = self.out_layers(h)
-        h = self.spade(h, s_cond)
+        # Format inputs for SPADE
+        # SPADE expects x_dic to be a tensor and segmap_dic to be a dictionary
+        current_spatial_dim = str(h.size(-1))
+        
+        if s_cond is not None:
+            if isinstance(s_cond, dict):
+                s_cond_dic = s_cond
+                # Ensure the current spatial dimension key exists
+                if current_spatial_dim not in s_cond_dic:
+                    # Find the closest available spatial dimension or create a new one
+                    available_dims = list(s_cond_dic.keys())
+                    if available_dims:
+                        # Use the first available dimension and interpolate if needed
+                        closest_dim = available_dims[0]
+                        closest_tensor = s_cond_dic[closest_dim]
+                        # Interpolate to match current spatial dimension
+                        target_size = (h.size(-2), h.size(-1))
+                        interpolated = F.interpolate(closest_tensor, size=target_size, mode='nearest')
+                        s_cond_dic[current_spatial_dim] = interpolated
+                    else:
+                        s_cond_dic[current_spatial_dim] = torch.zeros_like(h[:, :1, :, :])
+                else:
+                    s_cond_dic = s_cond
+            else:
+                s_cond_dic = {str(s_cond.size(-1)): s_cond}
+                # Ensure the current spatial dimension key exists
+                if current_spatial_dim not in s_cond_dic:
+                    # Interpolate from the available dimension
+                    available_dims = list(s_cond_dic.keys())
+                    if available_dims:
+                        closest_dim = available_dims[0]
+                        closest_tensor = s_cond_dic[closest_dim]
+                        target_size = (h.size(-2), h.size(-1))
+                        interpolated = F.interpolate(closest_tensor, size=target_size, mode='nearest')
+                        s_cond_dic[current_spatial_dim] = interpolated
+                    else:
+                        s_cond_dic[current_spatial_dim] = torch.zeros_like(h[:, :1, :, :])
+        else:
+            s_cond_dic = {current_spatial_dim: torch.zeros_like(h[:, :1, :, :])}
+            
+        h = self.spade(h, s_cond_dic)
         return self.skip_connection(x) + h
 
 class AttentionBlock(nn.Module):
@@ -1015,7 +1055,8 @@ class UNetModelDualcondV2(nn.Module):
         num_attention_blocks=None,
         disable_middle_self_attn=False,
         use_linear_in_transformer=False,
-        semb_channels=None
+        semb_channels=None,
+        use_edge_map=False
     ):
         super().__init__()
         if use_spatial_transformer:
@@ -1069,7 +1110,7 @@ class UNetModelDualcondV2(nn.Module):
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
         self.predict_codebook_ids = n_embed is not None
-
+        self.use_edge_map = use_edge_map
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
@@ -1077,6 +1118,37 @@ class UNetModelDualcondV2(nn.Module):
             linear(time_embed_dim, time_embed_dim),
         )
 
+
+        # Edge map processing branch
+        if self.use_edge_map:
+            # 3x3 conv layers (5 layers, 1024 channels, stride=1)
+            self.edge_conv_3x3 = nn.Sequential(
+                conv_nd(dims, 1, 256, 3, padding=1),  # 1 -> 256
+                nn.ReLU(inplace=True),
+                conv_nd(dims, 256, 512, 3, padding=1),  # 256 -> 512
+                nn.ReLU(inplace=True),
+                conv_nd(dims, 512, 768, 3, padding=1),  # 512 -> 768
+                nn.ReLU(inplace=True),
+                conv_nd(dims, 768, 1024, 3, padding=1),  # 768 -> 1024
+                nn.ReLU(inplace=True),
+                conv_nd(dims, 1024, 1024, 3, padding=1),  # 1024 -> 1024
+                nn.ReLU(inplace=True),
+            )
+            
+            # 4x4 conv layers (5 layers, channels: 512, 256, 128, 64, 32, stride=2)
+            self.edge_conv_4x4 = nn.Sequential(
+                conv_nd(dims, 1024, 512, 4, stride=2, padding=1),  # 1024 -> 512, stride=2
+                nn.ReLU(inplace=True),
+                conv_nd(dims, 512, 256, 4, stride=2, padding=1),  # 512 -> 256, stride=2
+                nn.ReLU(inplace=True),
+                conv_nd(dims, 256, 128, 4, stride=2, padding=1),  # 256 -> 128, stride=2
+                nn.ReLU(inplace=True),
+                conv_nd(dims, 128, 64, 4, stride=2, padding=1),  # 128 -> 64, stride=2
+                nn.ReLU(inplace=True),
+                conv_nd(dims, 64, 32, 4, stride=2, padding=1),  # 64 -> 32, stride=2
+                nn.ReLU(inplace=True),
+            )
+            
         if self.num_classes is not None:
             if isinstance(self.num_classes, int):
                 self.label_emb = nn.Embedding(num_classes, time_embed_dim)
@@ -1086,10 +1158,13 @@ class UNetModelDualcondV2(nn.Module):
             else:
                 raise ValueError()
 
+        # Adjust input channels if using edge map (adds 32 channels)
+        input_channels = in_channels + 32 if self.use_edge_map else in_channels
+        
         self.input_blocks = nn.ModuleList(
             [
                 TimestepEmbedSequential(
-                    conv_nd(dims, in_channels, model_channels, 3, padding=1)
+                    conv_nd(dims, input_channels, model_channels, 3, padding=1)
                 )
             ]
         )
@@ -1304,7 +1379,7 @@ class UNetModelDualcondV2(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps=None, context=None, struct_cond=None, y=None,**kwargs):
+    def forward(self, x, timesteps=None, context=None, struct_cond=None, y=None, edge_map=None, **kwargs):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
@@ -1324,6 +1399,36 @@ class UNetModelDualcondV2(nn.Module):
             assert y.shape == (x.shape[0],)
             emb = emb + self.label_emb(y)
 
+
+        # Process edge map if provided
+        print(f"DEBUG: UNetModelDualcondV2 - use_edge_map={self.use_edge_map}, edge_map is not None={edge_map is not None}")
+        
+        if self.use_edge_map and edge_map is not None:
+            print("DEBUG: *** ENTERING EDGE MAP PROCESSING IN UNetModelDualcondV2 ***")
+            # Process edge map: 2Kx2K -> 64x64x32
+            edge_map = edge_map.type(self.dtype)
+            print(f"DEBUG: edge_map shape: {edge_map.shape}")
+            
+            edge_features = self.edge_conv_3x3(edge_map)  # 3x3 conv layers
+            edge_latent = self.edge_conv_4x4(edge_features)  # 4x4 conv layers with stride=2
+            # edge_latent shape: [N, 32, 64, 64]
+            print(f"DEBUG: edge_latent shape: {edge_latent.shape}")
+            
+            # Concatenate edge latent with input x
+            # x shape: [N, C, H, W], edge_latent shape: [N, 32, 64, 64]
+            print(f"DEBUG: x shape before processing: {x.shape}")
+            # We need to ensure they have the same spatial dimensions
+            if x.shape[-2:] != edge_latent.shape[-2:]:
+                # Resize edge_latent to match x spatial dimensions instead of resizing x
+                print(f"DEBUG: Resizing edge_latent from {edge_latent.shape[-2:]} to {x.shape[-2:]}")
+                edge_latent = F.interpolate(edge_latent, size=x.shape[-2:], mode="bilinear", align_corners=False)
+            
+            # Concatenate along channel dimension: [N, C+32, H, W]
+            print(f"DEBUG: *** BEFORE CONCATENATION *** - x channels: {x.shape[1]}, edge_latent channels: {edge_latent.shape[1]}")
+            x = torch.cat([x, edge_latent], dim=1)
+            print(f"DEBUG: *** AFTER CONCATENATION *** - x channels: {x.shape[1]}")
+        else:
+            print("DEBUG: *** SKIPPING EDGE MAP PROCESSING IN UNetModelDualcondV2 ***")
         h = x.type(self.dtype)
         for module in self.input_blocks:
             h = module(h, emb, context, struct_cond)
@@ -1364,7 +1469,7 @@ class EncoderUNetModelWT(nn.Module):
         use_scale_shift_norm=False,
         resblock_updown=False,
         use_new_attention_order=False,
-        use_edge_map=False,  # 新增参数：是否使用edge map
+        use_edge_map=True,  # 新增参数：是否使用edge map
         *args,
         **kwargs
     ):
@@ -1559,25 +1664,40 @@ class EncoderUNetModelWT(nn.Module):
         :param edge_map: an [N x 1 x H x W] Tensor of edge map (optional).
         :return: an [N x K] Tensor of outputs.
         """
+        print(f"DEBUG: Model forward - edge_map parameter: {edge_map is not None}")
+        if edge_map is not None:
+            print(f"DEBUG: Model received edge_map with shape: {edge_map.shape}")
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
         # Process edge map if provided
+        print(f"DEBUG: use_edge_map={self.use_edge_map}, edge_map is not None={edge_map is not None}")
+        
         if self.use_edge_map and edge_map is not None:
+            print("DEBUG: *** ENTERING EDGE MAP PROCESSING ***")
             # Process edge map: 2Kx2K -> 64x64x32
             edge_map = edge_map.type(self.dtype)
+            print(f"DEBUG: edge_map shape: {edge_map.shape}")
+            
             edge_features = self.edge_conv_3x3(edge_map)  # 3x3 conv layers
             edge_latent = self.edge_conv_4x4(edge_features)  # 4x4 conv layers with stride=2
             # edge_latent shape: [N, 32, 64, 64]
+            print(f"DEBUG: edge_latent shape: {edge_latent.shape}")
             
             # Concatenate edge latent with input x
             # x shape: [N, C, H, W], edge_latent shape: [N, 32, 64, 64]
+            print(f"DEBUG: x shape before processing: {x.shape}")
             # We need to ensure they have the same spatial dimensions
             if x.shape[-2:] != edge_latent.shape[-2:]:
                 # Resize x to match edge_latent spatial dimensions
+                print(f"DEBUG: Resizing x from {x.shape[-2:]} to {edge_latent.shape[-2:]}")
                 x = F.interpolate(x, size=edge_latent.shape[-2:], mode='bilinear', align_corners=False)
             
             # Concatenate along channel dimension: [N, C+32, 64, 64]
+            print(f"DEBUG: *** BEFORE CONCATENATION *** - x channels: {x.shape[1]}, edge_latent channels: {edge_latent.shape[1]}")
             x = torch.cat([x, edge_latent], dim=1)
+            print(f"DEBUG: *** AFTER CONCATENATION *** - x channels: {x.shape[1]}")
+        else:
+            print("DEBUG: *** SKIPPING EDGE MAP PROCESSING ***")
 
         result_list = []
         results = {}

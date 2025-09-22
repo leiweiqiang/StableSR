@@ -47,6 +47,7 @@ model:
         use_checkpoint: False
         legacy: False
         semb_channels: 256
+        use_edge_map: True
 
     first_stage_config:
       target: ldm.models.autoencoder.AutoencoderKL
@@ -136,6 +137,7 @@ data:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
       params:
         gt_path: '/home/tra/stablesr_dataset/weiql_0920/paired/GT'
+        edge_map_path: '/home/tra/stablesr_dataset/weiql_0920/paired/EdgeMap'
         crop_size: 512
         io_backend:
           type: disk
@@ -165,6 +167,7 @@ data:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
       params:
         gt_path: '/home/tra/stablesr_dataset/weiql_0920/val/GT'
+        edge_map_path: '/home/tra/stablesr_dataset/weiql_0920/val/EdgeMap'
         crop_size: 512
         io_backend:
           type: disk
@@ -201,6 +204,7 @@ test_data:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
       params:
         gt_path: '/home/tra/stablesr_dataset/weiql_0920/test/GT'
+        edge_map_path: '/home/tra/stablesr_dataset/weiql_0920/test/EdgeMap'
         crop_size: 512
         io_backend:
           type: disk

@@ -313,6 +313,25 @@ class DDPM(pl.LightningModule):
                 if k.startswith(ik):
                     print("Deleting key {} from state_dict.".format(k))
                     del sd[k]
+        
+        # Handle edge map channel mismatch for the first convolution layer
+        if hasattr(self, 'model') and hasattr(self.model, 'diffusion_model') and hasattr(self.model.diffusion_model, 'use_edge_map') and self.model.diffusion_model.use_edge_map:
+            first_conv_key = "model.diffusion_model.input_blocks.0.0.weight"
+            if first_conv_key in sd:
+                print(f"Handling edge map channel mismatch for {first_conv_key}")
+                pretrained_weight = sd[first_conv_key]  # Shape: [320, 4, 3, 3]
+                current_weight = self.state_dict()[first_conv_key]  # Shape: [320, 36, 3, 3]
+                
+                # Initialize the new weight with zeros
+                new_weight = torch.zeros_like(current_weight)
+                # Copy pretrained weights to the first 4 channels
+                new_weight[:, :4, :, :] = pretrained_weight
+                # Leave the remaining 32 channels (edge map) as zeros for now
+                
+                # Update the state dict
+                sd[first_conv_key] = new_weight
+                print(f"Updated {first_conv_key} from {pretrained_weight.shape} to {new_weight.shape}")
+        
         missing, unexpected = self.load_state_dict(sd, strict=False) if not only_model else self.model.load_state_dict(
             sd, strict=False)
         print('<<<<<<<<<<<<>>>>>>>>>>>>>>>')
@@ -2117,6 +2136,20 @@ class LatentDiffusionSRTextWT(DDPM):
         out = [z, text_cond]
         out.append(z_gt)
 
+        # Extract edge_map from batch if available
+        edge_map = None
+        if 'edge_map' in batch:
+            edge_map = batch['edge_map'].cuda()
+            edge_map = edge_map.to(memory_format=torch.contiguous_format).float()
+            if bs is not None:
+                edge_map = edge_map[:bs]
+            edge_map = edge_map.to(self.device)
+            print(f"DEBUG: get_input extracted edge_map with shape: {edge_map.shape}")
+            out.append(edge_map)
+        else:
+            print("DEBUG: get_input - no edge_map in batch")
+            out.append(None)
+
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
             out.extend([x, self.gt, xrec])
@@ -2287,11 +2320,11 @@ class LatentDiffusionSRTextWT(DDPM):
             return self.first_stage_model.encode(x)
 
     def shared_step(self, batch, **kwargs):
-        x, c, gt = self.get_input(batch, self.first_stage_key)
-        loss = self(x, c, gt)
+        x, c, gt, edge_map = self.get_input(batch, self.first_stage_key)
+        loss = self(x, c, gt, edge_map)
         return loss
 
-    def forward(self, x, c, gt, *args, **kwargs):
+    def forward(self, x, c, gt, edge_map=None, *args, **kwargs):
         index = np.random.randint(0, self.num_timesteps, size=x.size(0))
         t = torch.from_numpy(index)
         t = t.to(self.device).long()
@@ -2313,7 +2346,7 @@ class LatentDiffusionSRTextWT(DDPM):
             struc_c = self.structcond_stage_model(gt, t_ori)
         else:
             struc_c = self.structcond_stage_model(x, t_ori)
-        return self.p_losses(gt, c, struc_c, t, t_ori, x, *args, **kwargs)
+        return self.p_losses(gt, c, struc_c, t, t_ori, x, edge_map=edge_map, *args, **kwargs)
 
     def _rescale_annotations(self, bboxes, crop_coordinates):  # TODO: move to dataset
         def rescale_bbox(bbox):
@@ -2325,7 +2358,7 @@ class LatentDiffusionSRTextWT(DDPM):
 
         return [rescale_bbox(b) for b in bboxes]
 
-    def apply_model(self, x_noisy, t, cond, struct_cond, return_ids=False):
+    def apply_model(self, x_noisy, t, cond, struct_cond, edge_map=None, return_ids=False):
 
         if isinstance(cond, dict):
             # hybrid case, cond is exptected to be a dict
@@ -2422,7 +2455,7 @@ class LatentDiffusionSRTextWT(DDPM):
 
         else:
             cond['struct_cond'] = struct_cond
-            x_recon = self.model(x_noisy, t, **cond)
+            x_recon = self.model(x_noisy, t, edge_map=edge_map, **cond)
 
         if isinstance(x_recon, tuple) and not return_ids:
             return x_recon[0]
@@ -2447,7 +2480,7 @@ class LatentDiffusionSRTextWT(DDPM):
         kl_prior = normal_kl(mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0)
         return mean_flat(kl_prior) / np.log(2.0)
 
-    def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, noise=None):
+    def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, edge_map=None, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
@@ -2457,7 +2490,7 @@ class LatentDiffusionSRTextWT(DDPM):
                 noise = noise_new * 0.5 + noise * 0.5
                 x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-        model_output = self.apply_model(x_noisy, t_ori, cond, struct_cond)
+        model_output = self.apply_model(x_noisy, t_ori, cond, struct_cond, edge_map=edge_map)
 
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
@@ -3346,25 +3379,25 @@ class DiffusionWrapper(pl.LightningModule):
         self.conditioning_key = conditioning_key
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm']
 
-    def forward(self, x, t, c_concat: list = None, c_crossattn: list = None, struct_cond=None, seg_cond=None):
+    def forward(self, x, t, c_concat: list = None, c_crossattn: list = None, struct_cond=None, seg_cond=None, edge_map=None):
         if self.conditioning_key is None:
-            out = self.diffusion_model(x, t)
+            out = self.diffusion_model(x, t, edge_map=edge_map)
         elif self.conditioning_key == 'concat':
             xc = torch.cat([x] + c_concat, dim=1)
-            out = self.diffusion_model(xc, t)
+            out = self.diffusion_model(xc, t, edge_map=edge_map)
         elif self.conditioning_key == 'crossattn':
             cc = torch.cat(c_crossattn, 1)
             if seg_cond is None:
-                out = self.diffusion_model(x, t, context=cc, struct_cond=struct_cond)
+                out = self.diffusion_model(x, t, context=cc, struct_cond=struct_cond, edge_map=edge_map)
             else:
-                out = self.diffusion_model(x, t, context=cc, struct_cond=struct_cond, seg_cond=seg_cond)
+                out = self.diffusion_model(x, t, context=cc, struct_cond=struct_cond, seg_cond=seg_cond, edge_map=edge_map)
         elif self.conditioning_key == 'hybrid':
             xc = torch.cat([x] + c_concat, dim=1)
             cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(xc, t, context=cc)
+            out = self.diffusion_model(xc, t, context=cc, edge_map=edge_map)
         elif self.conditioning_key == 'adm':
             cc = c_crossattn[0]
-            out = self.diffusion_model(x, t, y=cc)
+            out = self.diffusion_model(x, t, y=cc, edge_map=edge_map)
         else:
             raise NotImplementedError()
 
