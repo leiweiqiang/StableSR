@@ -1,0 +1,1 @@
+python /home/tra/StableSR/main.py --train --base /home/tra/StableSR/configs/stableSRNew/v2-finetune_text_T_512_with_edge.yaml --gpus 0, --name v2-finetune_text_T_512_with_edge --scale_lr False
