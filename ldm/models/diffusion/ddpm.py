@@ -313,6 +313,65 @@ class DDPM(pl.LightningModule):
                 if k.startswith(ik):
                     print("Deleting key {} from state_dict.".format(k))
                     del sd[k]
+        # Handle edge fusion channel mismatch for models with 8-channel input
+        print(f"DEBUG: init_from_ckpt - hasattr use_edge_fusion: {hasattr(self, 'use_edge_fusion')}")
+        if hasattr(self, 'use_edge_fusion'):
+            print(f"DEBUG: init_from_ckpt - use_edge_fusion: {self.use_edge_fusion}")
+        print(f"DEBUG: init_from_ckpt - hasattr use_edge_fusion_temp: {hasattr(self, 'use_edge_fusion_temp')}")
+        if hasattr(self, 'use_edge_fusion_temp'):
+            print(f"DEBUG: init_from_ckpt - use_edge_fusion_temp: {self.use_edge_fusion_temp}")
+        
+        if (hasattr(self, 'use_edge_fusion') and self.use_edge_fusion) or (hasattr(self, 'use_edge_fusion_temp') and self.use_edge_fusion_temp):
+            # Check if this is a model with extended input channels (8 instead of 4)
+            first_conv_key = "model.diffusion_model.input_blocks.0.0.weight"
+            if first_conv_key in sd:
+                pretrained_shape = sd[first_conv_key].shape
+                current_shape = self.state_dict()[first_conv_key].shape
+                
+                if pretrained_shape[1] == 4 and current_shape[1] == 8:
+                    print(f"Handling edge fusion channel mismatch for {first_conv_key}")
+                    print(f"Pretrained shape: {pretrained_shape}, Current shape: {current_shape}")
+                    
+                    # Create new weight tensor with 8 input channels
+                    new_weight = torch.zeros_like(self.state_dict()[first_conv_key])
+                    
+                    # Copy pretrained weights to the first 4 channels
+                    new_weight[:, :4, :, :] = sd[first_conv_key]
+                    
+                    # Initialize the remaining 4 channels (edge features) with small random values
+                    torch.nn.init.xavier_uniform_(new_weight[:, 4:, :, :], gain=0.01)
+                    
+                    # Update the state dict
+                    sd[first_conv_key] = new_weight
+                    print(f"Updated {first_conv_key} from {pretrained_shape} to {new_weight.shape}")
+                    print("✓ First 4 channels: Copied from pretrained model")
+                    print("✓ Channels 4-7: Initialized with Xavier uniform (gain=0.01)")
+            
+            # Handle structcond_stage_model channel mismatch
+            structcond_first_conv_key = "structcond_stage_model.input_blocks.0.0.weight"
+            if structcond_first_conv_key in sd:
+                pretrained_shape = sd[structcond_first_conv_key].shape
+                current_shape = self.state_dict()[structcond_first_conv_key].shape
+                
+                if pretrained_shape[1] == 4 and current_shape[1] == 8:
+                    print(f"Handling edge fusion channel mismatch for {structcond_first_conv_key}")
+                    print(f"Pretrained shape: {pretrained_shape}, Current shape: {current_shape}")
+                    
+                    # Create new weight tensor with 8 input channels
+                    new_weight = torch.zeros_like(self.state_dict()[structcond_first_conv_key])
+                    
+                    # Copy pretrained weights to the first 4 channels
+                    new_weight[:, :4, :, :] = sd[structcond_first_conv_key]
+                    
+                    # Initialize the remaining 4 channels (edge features) with small random values
+                    torch.nn.init.xavier_uniform_(new_weight[:, 4:, :, :], gain=0.01)
+                    
+                    # Update the state dict
+                    sd[structcond_first_conv_key] = new_weight
+                    print(f"Updated {structcond_first_conv_key} from {pretrained_shape} to {new_weight.shape}")
+                    print("✓ First 4 channels: Copied from pretrained model")
+                    print("✓ Channels 4-7: Initialized with Xavier uniform (gain=0.01)")
+
         missing, unexpected = self.load_state_dict(sd, strict=False) if not only_model else self.model.load_state_dict(
             sd, strict=False)
         print('<<<<<<<<<<<<>>>>>>>>>>>>>>>')
@@ -2310,10 +2369,10 @@ class LatentDiffusionSRTextWT(DDPM):
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
         if self.test_gt:
-            struc_c = self.structcond_stage_model(gt, t_ori)
+            struc_c = self.structcond_stage_model(x, t_ori)  # Use x (fused latent) instead of gt
         else:
             struc_c = self.structcond_stage_model(x, t_ori)
-        return self.p_losses(gt, c, struc_c, t, t_ori, x, *args, **kwargs)
+        return self.p_losses(x, c, struc_c, t, t_ori, x, *args, **kwargs)  # Use x (fused latent) as x_start
 
     def _rescale_annotations(self, bboxes, crop_coordinates):  # TODO: move to dataset
         def rescale_bbox(bbox):
@@ -2448,6 +2507,7 @@ class LatentDiffusionSRTextWT(DDPM):
         return mean_flat(kl_prior) / np.log(2.0)
 
     def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, noise=None):
+        # Generate noise with the same shape as x_start (8-channel fused latent)
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
@@ -2462,17 +2522,20 @@ class LatentDiffusionSRTextWT(DDPM):
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
 
+        # Use original 4-channel latent for target computation
         if self.parameterization == "x0":
-            target = x_start
+            target = z_gt  # Use original 4-channel GT latent
         elif self.parameterization == "eps":
-            target = noise
+            # Extract first 4 channels from 8-channel noise to match model output
+            target = noise[:, :4, :, :]  # Use first 4 channels of 8-channel noise
         elif self.parameterization == "v":
-            target = self.get_v(x_start, noise, t)
+            # Generate 4-channel noise for v-parameterization
+            noise_4ch = torch.randn_like(z_gt)
+            target = self.get_v(z_gt, noise_4ch, t)  # Use original 4-channel latent
         else:
             raise NotImplementedError()
 
         model_output_ = model_output
-
         loss_simple = self.get_loss(model_output_, target, mean=False).mean([1, 2, 3])
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
 

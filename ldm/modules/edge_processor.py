@@ -11,11 +11,11 @@ from typing import Optional
 
 class EdgeProcessor(nn.Module):
     """
-    Edge image processor that converts 2Kx2K edge images to 64x64x4 features
+    Edge image processor that converts 512x512 edge images to 64x64x4 features
     
     Architecture:
-    1. First stage: 5 layers of 3x3 conv with stride=1, 1024 channels each
-    2. Second stage: 5 layers of 4x4 conv with stride=2, channels: 512->256->64->16->4
+    1. First stage: 3 layers of 3x3 conv with stride=1, channels: 1->128->256->256
+    2. Second stage: 3 layers of 4x4 conv with stride=2, channels: 256->128->64->4
     3. Output: 64x64x4 features ready for fusion with SD U-Net input
     """
     
@@ -25,58 +25,38 @@ class EdgeProcessor(nn.Module):
         self.input_channels = input_channels
         self.output_channels = output_channels
         
-        # First stage: 3x3 conv layers with stride=1, 1024 channels each
+        # First stage: 3x3 conv layers with stride=1, 256 channels each (adapted for 512x512 input)
         self.first_stage = nn.Sequential(
-            # Layer 1: 2048x2048 -> 2048x2048
-            nn.Conv2d(input_channels, 1024, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(1024),
+            # Layer 1: 512x512 -> 512x512
+            nn.Conv2d(input_channels, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             
-            # Layer 2: 2048x2048 -> 2048x2048
-            nn.Conv2d(1024, 1024, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(1024),
-            nn.ReLU(inplace=True),
-            
-            # Layer 3: 2048x2048 -> 2048x2048
-            nn.Conv2d(1024, 1024, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(1024),
-            nn.ReLU(inplace=True),
-            
-            # Layer 4: 2048x2048 -> 2048x2048
-            nn.Conv2d(1024, 1024, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(1024),
-            nn.ReLU(inplace=True),
-            
-            # Layer 5: 2048x2048 -> 2048x2048
-            nn.Conv2d(1024, 1024, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(1024),
-            nn.ReLU(inplace=True),
-        )
-        
-        # Second stage: 4x4 conv layers with stride=2, decreasing channels
-        self.second_stage = nn.Sequential(
-            # Layer 1: 2048x2048 -> 1024x1024, 1024->512 channels
-            nn.Conv2d(1024, 512, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            
-            # Layer 2: 1024x1024 -> 512x512, 512->256 channels
-            nn.Conv2d(512, 256, kernel_size=4, stride=2, padding=1),
+            # Layer 2: 512x512 -> 512x512
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
             
-            # Layer 3: 512x512 -> 256x256, 256->64 channels
-            nn.Conv2d(256, 64, kernel_size=4, stride=2, padding=1),
+            # Layer 3: 512x512 -> 512x512
+            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+        )
+        
+        # Second stage: 4x4 conv layers with stride=2, decreasing channels (adapted for 512x512 input)
+        self.second_stage = nn.Sequential(
+            # Layer 1: 512x512 -> 256x256, 256->128 channels
+            nn.Conv2d(256, 128, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            
+            # Layer 2: 256x256 -> 128x128, 128->64 channels
+            nn.Conv2d(128, 64, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             
-            # Layer 4: 256x256 -> 128x128, 64->16 channels
-            nn.Conv2d(64, 16, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
-            
-            # Layer 5: 128x128 -> 64x64, 16->4 channels
-            nn.Conv2d(16, output_channels, kernel_size=4, stride=2, padding=1),
+            # Layer 3: 128x128 -> 64x64, 64->output_channels
+            nn.Conv2d(64, output_channels, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(output_channels),
             nn.ReLU(inplace=True),
         )

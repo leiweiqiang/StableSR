@@ -34,8 +34,15 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
             use_edge_fusion: Whether to use edge feature fusion
             *args, **kwargs: Arguments for parent class
         """
+        # Temporarily set use_edge_fusion attribute so init_from_ckpt can detect it
+        self.use_edge_fusion_temp = use_edge_fusion
+        print(f"DEBUG: __init__ - use_edge_fusion: {use_edge_fusion}")
+        print(f"DEBUG: __init__ - use_edge_fusion_temp: {self.use_edge_fusion_temp}")
+        
+        # Call parent constructor first
         super().__init__(*args, **kwargs)
         
+        # Now we can safely assign module attributes
         self.use_edge_fusion = use_edge_fusion
         
         # Initialize edge processor
@@ -54,24 +61,65 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
                 sd_input_channels=4,
                 edge_channels=4
             )
+            print(f"DEBUG: __init__ - Created edge_fusion: {type(self.edge_fusion)}")
+            print(f"DEBUG: __init__ - edge_processor created: {hasattr(self, 'edge_processor')}")
+            print(f"DEBUG: __init__ - edge_fusion created: {hasattr(self, 'edge_fusion')}")
+            # Edge fusion components will be moved to device later
+        else:
+            print("DEBUG: __init__ - use_edge_fusion is False, not creating edge_fusion")
+            
+        # Final verification
+        print(f"DEBUG: __init__ - Final check - use_edge_fusion: {self.use_edge_fusion}")
+        print(f"DEBUG: __init__ - Final check - has edge_processor: {hasattr(self, 'edge_processor')}")
+        print(f"DEBUG: __init__ - Final check - has edge_fusion: {hasattr(self, 'edge_fusion')}")
+        if hasattr(self, 'edge_processor'):
+            print(f"DEBUG: __init__ - edge_processor type: {type(self.edge_processor)}")
+        if hasattr(self, 'edge_fusion'):
+            print(f"DEBUG: __init__ - edge_fusion type: {type(self.edge_fusion)}")
         
         # Store original model for comparison
         self.original_model = self.model
         
-        # Create extended model that can handle 8-channel input
+        # Note: We don't need to create an extended model anymore
+        # The checkpoint loading already handled the channel extension
+        # Just ensure the model is properly configured for edge fusion
         if self.use_edge_fusion:
-            self._create_extended_model()
+            print("✓ Edge fusion enabled - model ready for 8-channel input")
     
     def _create_extended_model(self):
         """
         Create an extended U-Net model that can handle 8-channel input instead of 4
         """
-        # Get the original model configuration
-        original_config = self.model.config
+        # Get the original model configuration from the parent class
+        # The model config is stored in the parent class, not in the DiffusionWrapper
+        if hasattr(self, 'unet_config'):
+            original_config = self.unet_config.copy()
+        else:
+            # Fallback: create a basic config based on the current model structure
+            original_config = {
+                'target': 'ldm.modules.diffusionmodules.openaimodel.UNetModelDualcondV2',
+                'params': {
+                    'image_size': 32,
+                    'in_channels': 4,  # Will be updated to 8
+                    'out_channels': 4,
+                    'model_channels': 320,
+                    'attention_resolutions': [4, 2, 1],
+                    'num_res_blocks': 2,
+                    'channel_mult': [1, 2, 4, 4],
+                    'num_head_channels': 64,
+                    'use_spatial_transformer': True,
+                    'use_linear_in_transformer': True,
+                    'transformer_depth': 1,
+                    'context_dim': 1024,
+                    'use_checkpoint': False,
+                    'legacy': False,
+                    'semb_channels': 256,
+                }
+            }
         
         # Create a new model with extended input channels
         extended_config = original_config.copy()
-        extended_config['in_channels'] = 8  # 4 (original) + 4 (edge features)
+        extended_config['params']['in_channels'] = 8  # 4 (original) + 4 (edge features)
         
         # Instantiate the extended model
         self.model = instantiate_from_config(extended_config)
@@ -85,7 +133,7 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         """
         with torch.no_grad():
             # Copy weights for the first 4 channels
-            if hasattr(self.model, 'model') and hasattr(self.original_model, 'model'):
+            try:
                 # Handle nested model structure
                 original_conv = self.original_model.model.diffusion_model.input_blocks[0][0]
                 extended_conv = self.model.model.diffusion_model.input_blocks[0][0]
@@ -101,10 +149,11 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
                 print(f"  - Original channels (0-3): Copied from pretrained model")
                 print(f"  - New channels (4-7): Initialized with Xavier uniform (gain=0.01)")
                 print(f"  - Weight shape: {extended_conv.weight.shape}")
-            else:
-                print("⚠️ Warning: Could not find model structure for weight transfer")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not transfer weights: {e}")
                 print("  - Original model structure:", hasattr(self, 'original_model'))
                 print("  - Extended model structure:", hasattr(self.model, 'model'))
+                print("  - This is expected if weights were already transferred during checkpoint loading")
     
     @torch.no_grad()
     def get_input(self, batch, k=None, return_first_stage_outputs=False, 
@@ -114,7 +163,7 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         Enhanced get_input method that handles edge images
         
         Args:
-            batch: Input batch containing 'lq', 'gt', and optionally 'edge'
+            batch: Input batch containing 'lq', 'gt', and optionally 'edge_map'
             k: Key for input data
             return_first_stage_outputs: Whether to return first stage outputs
             force_c_encode: Force encoding
@@ -136,25 +185,36 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         )
         
         # Process edge images if available
-        if 'edge' in batch and self.use_edge_fusion:
-            edge_images = batch['edge'].cuda()
-            edge_images = edge_images.to(memory_format=torch.contiguous_format).float()
+        # Ensure edge fusion components are on the correct device
+        if hasattr(self, 'edge_processor') and hasattr(self, 'device'):
+            if next(self.edge_processor.parameters()).device != self.device:
+                self.edge_processor = self.edge_processor.to(self.device)
+        if hasattr(self, 'edge_fusion') and hasattr(self, 'device'):
+            if next(self.edge_fusion.parameters()).device != self.device:
+                self.edge_fusion = self.edge_fusion.to(self.device)
+        
+        if self.use_edge_fusion and len(result) >= 1:
+            latent = result[0]  # First element is usually the latent
             
-            # Ensure edge images are in the correct range [-1, 1]
-            if edge_images.max() <= 1.0 and edge_images.min() >= 0.0:
-                edge_images = edge_images * 2.0 - 1.0
+            if 'edge_map' in batch:
+                edge_images = batch['edge_map'].cuda()
+                edge_images = edge_images.to(memory_format=torch.contiguous_format).float()
+                
+                # Ensure edge images are in the correct range [-1, 1]
+                if edge_images.max() <= 1.0 and edge_images.min() >= 0.0:
+                    edge_images = edge_images * 2.0 - 1.0
+                
+                # Process edge images through edge processor
+                edge_features = self.edge_processor(edge_images)
+            else:
+                # Create dummy edge features with the same spatial dimensions as latent
+                batch_size, _, height, width = latent.shape
+                edge_features = torch.zeros(batch_size, 4, height, width, device=latent.device, dtype=latent.dtype)
             
-            # Process edge images through edge processor
-            edge_features = self.edge_processor(edge_images)
-            
-            # Store edge features for later use
-            self.edge_features = edge_features
-            
-            # If we have the latent representation, fuse it with edge features
-            if len(result) >= 1 and hasattr(self, 'edge_features'):
-                latent = result[0]  # First element is usually the latent
-                fused_latent = self.edge_fusion(latent, self.edge_features)
-                result = (fused_latent,) + result[1:]  # Replace first element
+            # Apply edge fusion
+            fused_latent = self.edge_fusion(latent, edge_features)
+            # Replace first element in the list
+            result[0] = fused_latent
         
         return result
     
@@ -162,34 +222,17 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         """
         Enhanced forward pass with edge processing
         """
-        # If we have edge features, use the extended model
-        if hasattr(self, 'edge_features') and self.use_edge_fusion:
-            # Temporarily switch to extended model
-            original_model = self.model
-            self.model = self.model
-            
-            # Call parent forward with extended input
-            result = super().forward(x, c, gt, *args, **kwargs)
-            
-            # Restore original model
-            self.model = original_model
-            
-            return result
-        else:
-            # Use original forward pass
-            return super().forward(x, c, gt, *args, **kwargs)
+        # The model is already configured for 8-channel input if edge fusion is enabled
+        # Just call the parent forward method
+        return super().forward(x, c, gt, *args, **kwargs)
     
     def apply_model(self, x_noisy, t, cond, struct_cond, return_ids=False):
         """
         Enhanced apply_model with edge processing support
         """
-        # If we have edge features, use the extended model
-        if hasattr(self, 'edge_features') and self.use_edge_fusion:
-            # Use the extended model that can handle 8-channel input
-            return self.model(x_noisy, t, cond, struct_cond, return_ids)
-        else:
-            # Use original model
-            return super().apply_model(x_noisy, t, cond, struct_cond, return_ids)
+        # The model is already configured for 8-channel input if edge fusion is enabled
+        # Just call the parent apply_model method
+        return super().apply_model(x_noisy, t, cond, struct_cond, return_ids)
     
     def sample(self, cond, struct_cond, batch_size=1, timesteps=None, 
                time_replace=None, x_T=None, return_intermediates=False, 

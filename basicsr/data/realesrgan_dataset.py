@@ -38,6 +38,8 @@ class RealESRGANDataset(data.Dataset):
         self.opt = opt
         self.file_client = None
         self.io_backend_opt = opt['io_backend']
+        # Edge map path (optional)
+        self.edge_map_path = opt.get('edge_map_path', None)
         if 'crop_size' in opt:
             self.crop_size = opt['crop_size']
         else:
@@ -236,6 +238,39 @@ class RealESRGANDataset(data.Dataset):
         kernel2 = torch.FloatTensor(kernel2)
 
         return_d = {'gt': img_gt, 'kernel1': kernel, 'kernel2': kernel2, 'sinc_kernel': sinc_kernel, 'gt_path': gt_path}
+        
+        # Load edge map if available
+        if self.edge_map_path is not None:
+            # Get corresponding edge map path
+            gt_filename = os.path.basename(gt_path)
+            edge_map_filename = gt_filename.replace('.png', '.png').replace('.jpg', '.png').replace('.jpeg', '.png')
+            edge_map_path = os.path.join(self.edge_map_path, edge_map_filename)
+            
+            try:
+                if os.path.exists(edge_map_path):
+                    img_bytes = self.file_client.get(edge_map_path, 'edge_map')
+                    edge_map = imfrombytes(img_bytes, float32=True)
+                    
+                    # Convert to grayscale if needed
+                    if edge_map.ndim == 3:
+                        edge_map = cv2.cvtColor(edge_map, cv2.COLOR_BGR2GRAY)
+                    
+                    # Resize to match gt image
+                    if edge_map.shape != img_gt.shape[1:3]:  # img_gt is CHW, edge_map is HW
+                        edge_map = cv2.resize(edge_map, (img_gt.shape[2], img_gt.shape[1]), interpolation=cv2.INTER_NEAREST)
+                    
+                    # Convert to tensor and normalize to [0, 1]
+                    edge_map = torch.from_numpy(edge_map).float().unsqueeze(0) / 255.0  # Add channel dimension
+                    return_d['edge_map'] = edge_map
+                else:
+                    # Create a zero tensor with the same shape as gt image
+                    edge_map = torch.zeros(1, img_gt.shape[1], img_gt.shape[2]).float()
+                    return_d['edge_map'] = edge_map
+            except Exception as e:
+                # Create a zero tensor with the same shape as gt image
+                edge_map = torch.zeros(1, img_gt.shape[1], img_gt.shape[2]).float()
+                return_d['edge_map'] = edge_map
+        
         return return_d
 
     def __len__(self):
