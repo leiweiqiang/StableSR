@@ -293,6 +293,67 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
             batch_size_sample, **kwargs
         )
 
+    @torch.no_grad()
+    def log_images(self, batch, N=8, n_row=4, sample=True, ddim_steps=200, ddim_eta=1., return_keys=None,
+                   quantize_denoised=True, inpaint=False, plot_denoise_rows=False, plot_progressive_rows=False,
+                   plot_diffusion_rows=False, **kwargs):
+        """
+        Enhanced log_images method that handles edge fusion properly
+        
+        The key fix: When decoding for visualization, we need to use only the original 4 channels
+        from the fused 8-channel latent, since the VAE can only decode 4-channel latents.
+        """
+        use_ddim = ddim_steps is not None
+
+        log = dict()
+        z, c_lq, z_gt, x, gt, yrec, xc = self.get_input(batch, self.first_stage_key,
+                                           return_first_stage_outputs=True,
+                                           force_c_encode=True,
+                                           return_original_cond=True,
+                                           bs=N, val=True)
+        N = min(x.shape[0], N)
+        n_row = min(x.shape[0], n_row)
+        if self.test_gt:
+            log["gt"] = gt
+        else:
+            log["inputs"] = x
+            log["reconstruction"] = gt
+            # CRITICAL FIX: Only use the first 4 channels for VAE decoding
+            if self.use_edge_fusion and z.shape[1] == 8:
+                # Extract only the original 4 channels for VAE decoding
+                z_original = z[:, :4, :, :]  # Take first 4 channels
+                log["recon_lq"] = self.decode_first_stage(z_original)
+            else:
+                # Normal case: z is already 4 channels
+                log["recon_lq"] = self.decode_first_stage(z)
+
+        # Rest of the method follows the parent implementation...
+        if sample:
+            # get denoise row
+            with self.ema_scope("Plotting"):
+                samples, z_denoise_row = self.sample_log(cond=c_lq, struct_cond=z_gt, batch_size=N, ddim=use_ddim,
+                                                         ddim_steps=ddim_steps, eta=ddim_eta)
+            x_samples = self.decode_first_stage(samples)
+            log["samples"] = x_samples
+            if plot_denoise_rows:
+                denoise_grid = self._get_rows_from_list(z_denoise_row)
+                log["denoise_row"] = denoise_grid
+
+        if plot_progressive_rows:
+            with self.ema_scope("Plotting Progressives"):
+                img, progressives = self.progressive_denoising(c_lq, z_gt,
+                                                              cond=c_lq, struct_cond=z_gt, batch_size=N,
+                                                              ddim=use_ddim, ddim_steps=ddim_steps, eta=ddim_eta)
+                prog_row = self._get_rows_from_list(progressives, desc="Progressive Generation")
+                log["progressive_row"] = prog_row
+
+        if return_keys:
+            if np.intersect1d(list(log.keys()), return_keys).shape[0] == 0:
+                return log
+            else:
+                return {key: log[key] for key in return_keys}
+        return log
+
 
 def create_stablesr_with_edge_config():
     """

@@ -85,25 +85,33 @@ class EdgeProcessor(nn.Module):
         Returns:
             Edge features tensor of shape (B, 4, 64, 64)
         """
+        # print("DEBUG: *** ENTERING EDGE PROCESSING IN EdgeProcessor ***")
         # Validate input dimensions
         if x.dim() != 4:
+            print(f"DEBUG: Input tensor has {x.dim()} dimensions (expected 4)")
             raise ValueError(f"Expected 4D input tensor, got {x.dim()}D")
         
         B, C, H, W = x.shape
+        # print(f"DEBUG: Input tensor shape: {x.shape}")
         if C != self.input_channels:
+            # print(f"DEBUG: Input tensor channels: {C} (expected {self.input_channels})")
             raise ValueError(f"Expected {self.input_channels} input channels, got {C}")
         
         # First stage: 3x3 convolutions
         x = self.first_stage(x)
+        # print(f"DEBUG: After first_stage shape: {x.shape}")
         
         # Second stage: 4x4 convolutions with stride=2
         x = self.second_stage(x)
+        # print(f"DEBUG: After second_stage shape: {x.shape}")
         
         # Final output should be (B, 4, 64, 64)
         expected_shape = (B, self.output_channels, 64, 64)
         if x.shape != expected_shape:
+            # print(f"DEBUG: Output shape mismatch: got {x.shape}, expected {expected_shape}")
             raise RuntimeError(f"Expected output shape {expected_shape}, got {x.shape}")
         
+        # print(f"DEBUG: EdgeProcessor output shape: {x.shape}")
         return x
 
 

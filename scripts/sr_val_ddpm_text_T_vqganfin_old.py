@@ -234,12 +234,23 @@ def main():
 
 	batch_size = opt.n_samples
 
-	img_list_ori = os.listdir(opt.init_img)
+	# collect valid image files from input directory, ignore subdirectories
+	all_entries = sorted(os.listdir(opt.init_img))
+	valid_exts = {'.png', '.jpg', '.jpeg', '.bmp', '.webp'}
+	img_list_ori = [
+		name for name in all_entries
+		if os.path.isfile(os.path.join(opt.init_img, name))
+		and os.path.splitext(name)[1].lower() in valid_exts
+	]
 	img_list = copy.deepcopy(img_list_ori)
 	init_image_list = []
 	for item in img_list_ori:
-		if os.path.exists(os.path.join(outpath, item)):
-			img_list.remove(item)
+		# skip if output already exists (we save as PNG with basename)
+		basename = os.path.splitext(os.path.basename(item))[0]
+		out_name = basename + '.png'
+		if os.path.exists(os.path.join(outpath, out_name)):
+			if item in img_list:
+				img_list.remove(item)
 			continue
 		cur_image = load_img(os.path.join(opt.init_img, item)).to(device)
 		cur_image = transform(cur_image)

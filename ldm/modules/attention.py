@@ -10,7 +10,20 @@ from ldm.modules.diffusionmodules.util import checkpoint
 try:
     import xformers
     import xformers.ops
-    XFORMERS_IS_AVAILBLE = True
+    # Test if xFormers CUDA operations actually work
+    import torch
+    if torch.cuda.is_available():
+        # Try a simple test to see if CUDA operations work
+        test_q = torch.randn(1, 1, 1, 64, device='cuda', dtype=torch.float16)
+        test_k = torch.randn(1, 1, 1, 64, device='cuda', dtype=torch.float16)
+        test_v = torch.randn(1, 1, 1, 64, device='cuda', dtype=torch.float16)
+        try:
+            xformers.ops.memory_efficient_attention(test_q, test_k, test_v)
+            XFORMERS_IS_AVAILBLE = True
+        except:
+            XFORMERS_IS_AVAILBLE = False
+    else:
+        XFORMERS_IS_AVAILBLE = False
 except:
     XFORMERS_IS_AVAILBLE = False
 

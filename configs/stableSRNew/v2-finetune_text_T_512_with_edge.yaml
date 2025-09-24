@@ -57,7 +57,8 @@ model:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         # for training only
-        ckpt_path: /home/tra/stablesr_dataset/ckpt/v2-1_512-ema-pruned.ckpt
+        # ckpt_path: /home/tra/stablesr_dataset/ckpt/v2-1_512-ema-pruned.ckpt
+        ckpt_path: /home/tra/stablesr_dataset/ckpt/stablesr_768v_000139.ckpt
         embed_dim: 4
         monitor: val/rec_loss
         ddconfig:
@@ -135,7 +136,7 @@ data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 2
-    num_workers: 0  # Set to 0 to avoid multiprocessing issues
+    num_workers: 6 
     wrap: false
     train:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
@@ -238,7 +239,7 @@ test_data:
 lightning:
   modelcheckpoint:
     params:
-      every_n_train_steps: 100
+      every_n_train_steps: 1500
   callbacks:
     image_logger:
       target: main.ImageLogger
@@ -249,6 +250,5 @@ lightning:
 
   trainer:
     benchmark: True
-    # max_steps: 800000
-    max_steps: 500
+    max_steps: 800000
     accumulate_grad_batches: 4
