@@ -3169,11 +3169,10 @@ class LatentDiffusionSRTextWT(DDPM):
     def sample_log(self,cond,struct_cond,batch_size,ddim, ddim_steps,**kwargs):
 
         if ddim:
-            raise NotImplementedError
             ddim_sampler = DDIMSampler(self)
             shape = (self.channels, self.image_size//8, self.image_size//8)
-            samples, intermediates =ddim_sampler.sample(ddim_steps,batch_size,
-                                                        shape,cond,verbose=False,**kwargs)
+            samples, intermediates =ddim_sampler.sample_sr_t(ddim_steps,batch_size,
+                                                        shape,cond,struct_cond=struct_cond,verbose=False,**kwargs)
 
         else:
             samples, intermediates = self.sample(cond=cond, struct_cond=struct_cond, batch_size=batch_size,
