@@ -1,2 +1,2 @@
 #!/bin/bash
-python /home/tra/StableSR/main.py --train --base /home/tra/StableSR/configs/stableSRNew/v2-finetune_text_T_512_with_edge.yaml --gpus 0, --name v2-finetune_text_T_512_with_edge --scale_lr False
+python /root/pd/StableSR/main.py --train --base /root/pd/StableSR/configs/stableSRNew/v2-finetune_text_T_512_weiql_0930.yaml --gpus 0,1,2,3,4,5,6,7 --name weiql_t800_0930 --scale_lr False
