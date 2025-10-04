@@ -175,6 +175,19 @@ class RealESRGANDataset(data.Dataset):
             # left = (w - crop_pad_size) // 2 -1
             img_gt = img_gt[top:top + crop_pad_size, left:left + crop_pad_size, ...]
 
+        # ------------------------ Generate edge map from GT image ------------------------ #
+        # Convert BGR to grayscale for edge detection
+        img_gt_gray = cv2.cvtColor(img_gt, cv2.COLOR_BGR2GRAY)
+        
+        # Apply Gaussian blur (reduces noise, improves edge detection)
+        img_gt_blurred = cv2.GaussianBlur(img_gt_gray, (5, 5), 1.4)
+        
+        # Apply Canny edge detector
+        img_edge = cv2.Canny(img_gt_blurred, threshold1=100, threshold2=200)
+        
+        # Convert to 3-channel for consistency
+        img_edge = cv2.cvtColor(img_edge, cv2.COLOR_GRAY2BGR)
+
         # ------------------------ Generate kernels (used in the first degradation) ------------------------ #
         kernel_size = random.choice(self.kernel_range)
         if np.random.uniform() < self.opt['sinc_prob']:
@@ -232,10 +245,11 @@ class RealESRGANDataset(data.Dataset):
 
         # BGR to RGB, HWC to CHW, numpy to tensor
         img_gt = img2tensor([img_gt], bgr2rgb=True, float32=True)[0]
+        img_edge = img2tensor([img_edge], bgr2rgb=True, float32=True)[0]
         kernel = torch.FloatTensor(kernel)
         kernel2 = torch.FloatTensor(kernel2)
 
-        return_d = {'gt': img_gt, 'kernel1': kernel, 'kernel2': kernel2, 'sinc_kernel': sinc_kernel, 'gt_path': gt_path}
+        return_d = {'gt': img_gt, 'img_edge': img_edge, 'kernel1': kernel, 'kernel2': kernel2, 'sinc_kernel': sinc_kernel, 'gt_path': gt_path}
         return return_d
 
     def __len__(self):
