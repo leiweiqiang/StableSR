@@ -16,7 +16,10 @@ from contextlib import contextmanager
 from functools import partial
 from tqdm import tqdm
 from torchvision.utils import make_grid
-from pytorch_lightning.utilities.distributed import rank_zero_only
+try:
+    from pytorch_lightning.utilities.distributed import rank_zero_only
+except ImportError:
+    from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
 from ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config
 from ldm.modules.ema import LitEma
@@ -2309,11 +2312,47 @@ class LatentDiffusionSRTextWT(DDPM):
                 print(s)
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
+        # Create structural conditioning from latent representation
+        # Check if inputs are already in latent space (4 channels) or RGB space (3 channels)
         if self.test_gt:
-            struc_c = self.structcond_stage_model(gt, t_ori)
+            # Check if gt is already in latent space (4 channels) or RGB space (3 channels)
+            if gt.shape[1] == 4:
+                # Already in latent space
+                struc_c = self.structcond_stage_model(gt, t_ori)
+            else:
+                # RGB space, need to encode to latent space
+                encoder_posterior_gt = self.encode_first_stage(gt)
+                z_gt = self.get_first_stage_encoding(encoder_posterior_gt).detach()
+                struc_c = self.structcond_stage_model(z_gt, t_ori)
         else:
-            struc_c = self.structcond_stage_model(x, t_ori)
-        return self.p_losses(gt, c, struc_c, t, t_ori, x, *args, **kwargs)
+            # Check if x is already in latent space (4 channels) or RGB space (3 channels)
+            if x.shape[1] == 4:
+                # Already in latent space
+                struc_c = self.structcond_stage_model(x, t_ori)
+            else:
+                # RGB space, need to encode to latent space
+                encoder_posterior_x = self.encode_first_stage(x)
+                z_x = self.get_first_stage_encoding(encoder_posterior_x).detach()
+                struc_c = self.structcond_stage_model(z_x, t_ori)
+        # Note: p_losses expects (x_start, cond, struct_cond, t, t_ori, z_gt, noise=None)
+        # where x_start should be the latent representation
+        if x.shape[1] == 4:
+            # x is already in latent space, use it directly
+            x_start = x
+            z_gt = gt  # gt is also in latent space
+        else:
+            # x is RGB, need to encode to latent space
+            encoder_posterior_x = self.encode_first_stage(x)
+            x_start = self.get_first_stage_encoding(encoder_posterior_x).detach()
+            encoder_posterior_gt = self.encode_first_stage(gt)
+            z_gt = self.get_first_stage_encoding(encoder_posterior_gt).detach()
+        
+        # Process text conditioning to convert from strings to tensors
+        if isinstance(c, list) and len(c) > 0 and isinstance(c[0], str):
+            # c is a list of strings, need to process through cond_stage_model
+            c = self.cond_stage_model(c)
+        
+        return self.p_losses(x_start, c, struc_c, t, t_ori, z_gt, *args, **kwargs)
 
     def _rescale_annotations(self, bboxes, crop_coordinates):  # TODO: move to dataset
         def rescale_bbox(bbox):
@@ -2421,8 +2460,8 @@ class LatentDiffusionSRTextWT(DDPM):
             x_recon = fold(o) / normalization
 
         else:
-            cond['struct_cond'] = struct_cond
-            x_recon = self.model(x_noisy, t, **cond)
+            # Don't add struct_cond to cond dict, pass it separately
+            x_recon = self.model(x_noisy, t, **cond, struct_cond=struct_cond)
 
         if isinstance(x_recon, tuple) and not return_ids:
             return x_recon[0]

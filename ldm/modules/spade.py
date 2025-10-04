@@ -70,7 +70,7 @@ class SPADE(nn.Module):
         super().__init__()
 
         assert config_text.startswith('spade')
-        parsed = re.search('spade(\D+)(\d)x\d', config_text)
+        parsed = re.search(r'spade(\D+)(\d)x\d', config_text)
         param_free_norm_type = str(parsed.group(1))
         ks = int(parsed.group(2))
 
@@ -89,7 +89,11 @@ class SPADE(nn.Module):
 
     def forward(self, x_dic, segmap_dic, size=None):
 
-        if size is None:
+        # Handle case where segmap_dic is actually a tensor (not a dictionary)
+        if isinstance(segmap_dic, torch.Tensor):
+            segmap = segmap_dic
+            x = x_dic
+        elif size is None:
             segmap = segmap_dic[str(x_dic.size(-1))]
             x = x_dic
         else:
@@ -100,7 +104,8 @@ class SPADE(nn.Module):
         normalized = self.param_free_norm(x)
 
         # Part 2. produce scaling and bias conditioned on semantic map
-        # segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
+        # Interpolate segmap to match the spatial dimensions of x
+        segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
         actv = self.mlp_shared(segmap)
         gamma = self.mlp_gamma(actv)
         beta = self.mlp_beta(actv)

@@ -179,14 +179,20 @@ class RealESRGANDataset(data.Dataset):
         # Convert BGR to grayscale for edge detection
         img_gt_gray = cv2.cvtColor(img_gt, cv2.COLOR_BGR2GRAY)
         
+        # Convert float32 [0,1] to uint8 [0,255] for Canny edge detection
+        img_gt_gray_uint8 = (img_gt_gray * 255).astype(np.uint8)
+        
         # Apply Gaussian blur (reduces noise, improves edge detection)
-        img_gt_blurred = cv2.GaussianBlur(img_gt_gray, (5, 5), 1.4)
+        img_gt_blurred = cv2.GaussianBlur(img_gt_gray_uint8, (5, 5), 1.4)
         
         # Apply Canny edge detector
         img_edge = cv2.Canny(img_gt_blurred, threshold1=100, threshold2=200)
         
         # Convert to 3-channel for consistency
         img_edge = cv2.cvtColor(img_edge, cv2.COLOR_GRAY2BGR)
+        
+        # Convert back to float32 [0,1] for consistency with the rest of the pipeline
+        img_edge = img_edge.astype(np.float32) / 255.0
 
         # ------------------------ Generate kernels (used in the first degradation) ------------------------ #
         kernel_size = random.choice(self.kernel_range)

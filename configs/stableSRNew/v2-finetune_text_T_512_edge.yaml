@@ -1,7 +1,7 @@
 sf: 4
 model:
   base_learning_rate: 5.0e-05
-  target: ldm.models.diffusion.ddpm.LatentDiffusionSRTextWT
+  target: ldm.models.diffusion.ddpm_with_edge.LatentDiffusionSRTextWTWithEdge
   params:
     # parameterization: "v"
     linear_start: 0.00085
@@ -19,18 +19,21 @@ model:
     scale_factor: 0.18215
     use_ema: False
     # for training only
-    # ckpt_path: /mnt/lustre/jywang/code/stable_diffmodels/v2-1_512-ema-pruned.ckpt
+    ckpt_path: /home/tra/stablesr_dataset/ckpt/v2-1_512-ema-pruned.ckpt
     unfrozen_diff: False
     random_size: False
     time_replace: 1000
     use_usm: True
+    # Edge processing parameters
+    use_edge_processing: True
+    edge_input_channels: 3
     #P2 weighting, we do not use in final version
     p2_gamma: ~
     p2_k: ~
     # ignore_keys: []
 
     unet_config:
-      target: ldm.modules.diffusionmodules.openaimodel.UNetModelDualcondV2
+      target: ldm.modules.diffusionmodules.unet_with_edge.UNetModelDualcondV2WithEdge
       params:
         image_size: 32 # unused
         in_channels: 4
@@ -44,15 +47,18 @@ model:
         use_linear_in_transformer: True
         transformer_depth: 1
         context_dim: 1024
-        use_checkpoint: False
+        use_checkpoint: True
         legacy: False
         semb_channels: 256
+        # Edge processing parameters
+        use_edge_processing: True
+        edge_input_channels: 3
 
     first_stage_config:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         # for training only
-        # ckpt_path: /mnt/lustre/jywang/code/stable_diffmodels/v2-1_512-ema-pruned.ckpt
+        ckpt_path: /home/tra/stablesr_dataset/ckpt/v2-1_512-ema-pruned.ckpt
         embed_dim: 4
         monitor: val/rec_loss
         ddconfig:
@@ -128,16 +134,17 @@ degradation:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 6
+    batch_size: 2
     num_workers: 6
     wrap: false
     train:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
       params:
         queue_size: 180
-        gt_path: ['/mnt/lustre/share/jywang/dataset/DIV8K/train_HR/', '/mnt/lustre/share/jywang/dataset/df2k_ost/GT/']
-        face_gt_path: '/mnt/lustre/share/jywang/dataset/FFHQ/1024/'
-        num_face: 10000
+        #gt_path: ['/mnt/nas-dp/dataset/DIV8K/train_HR/', '/mnt/nas-dp/dataset/df2k_ost/GT/']
+        gt_path: ['/mnt/nas-dp/dataset/DIV8K/train_HR/']
+        #face_gt_path: '/mnt/nas-dp/dataset/FFHQ/1024/'
+        #num_face: 10000
         crop_size: 512
         io_backend:
           type: disk
@@ -166,7 +173,7 @@ data:
     validation:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
       params:
-        gt_path: /mnt/lustre/share/jywang/dataset/ImageSR/DIV2K/DIV2K_train_HR/
+        gt_path: /mnt/nas-dp/dataset/DIV2K/DIV2K_train_HR/
         crop_size: 512
         io_backend:
           type: disk
@@ -202,7 +209,7 @@ test_data:
     test:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
       params:
-        gt_path: /mnt/lustre/share/jywang/dataset/ImageSR/DIV2K/DIV2K_train_HR/
+        gt_path: /mnt/nas-dp/dataset/DIV2K/DIV2K_train_HR/
         crop_size: 512
         io_backend:
           type: disk
@@ -243,5 +250,5 @@ lightning:
 
   trainer:
     benchmark: True
-    max_steps: 800000
-    accumulate_grad_batches: 4
+    max_steps: 5000 #800000
+    accumulate_grad_batches: 6

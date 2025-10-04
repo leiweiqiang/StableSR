@@ -405,7 +405,7 @@ class ResBlockDual(TimestepBlockDual):
         )
 
         # Here we use the built component of SPADE, rather than SFT. Should have no significant influence on the performance.
-        self.spade = SPADE(self.out_channels, semb_channels)
+        self.spade = SPADE(self.out_channels, semb_channels, 'spadeinstance3x3')
 
         self.out_layers = nn.Sequential(
             normalization(self.out_channels),
@@ -1015,7 +1015,9 @@ class UNetModelDualcondV2(nn.Module):
         num_attention_blocks=None,
         disable_middle_self_attn=False,
         use_linear_in_transformer=False,
-        semb_channels=None
+        semb_channels=None,
+        use_edge_processing=False,        # custom edge processing support
+        edge_input_channels=3,            # edge map input channels
     ):
         super().__init__()
         if use_spatial_transformer:

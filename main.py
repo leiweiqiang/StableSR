@@ -14,8 +14,7 @@ from PIL import Image
 from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
-from pytorch_lightning.utilities.distributed import rank_zero_only
-# from pytorch_lightning.utilities.rank_zero import rank_zero_only
+from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
@@ -417,7 +416,7 @@ class CUDACallback(Callback):
             pass
 
 
-if __name__ == "__main__":
+def main():
     from collections import OrderedDict
     # custom parser to specify config files, train, test and debug mode,
     # postfix, resume.
@@ -692,7 +691,8 @@ if __name__ == "__main__":
     # configure learning rate
     bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
     if not cpu:
-        ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
+        gpus_str = str(lightning_config.trainer.gpus)
+        ngpu = len(gpus_str.strip(",").split(','))
     else:
         ngpu = 1
     if 'accumulate_grad_batches' in lightning_config.trainer:
@@ -741,3 +741,7 @@ if __name__ == "__main__":
             raise
     if not opt.no_test and not trainer.interrupted:
         trainer.test(model, data)
+
+
+if __name__ == "__main__":
+    main()
