@@ -674,6 +674,11 @@ def main():
 
     trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
 
+    # Configure DDP plugin to disable find_unused_parameters for better performance
+    if trainer_opt.accelerator == "ddp":
+        from pytorch_lightning.plugins import DDPPlugin
+        trainer_kwargs["plugins"] = [DDPPlugin(find_unused_parameters=False)]
+
     trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
     trainer.logdir = logdir  ###
 
