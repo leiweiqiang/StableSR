@@ -106,6 +106,10 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
                 output_channels=in_channels + 4  # Fuse to 8 channels total
             )
             
+            # Ensure edge processing modules require gradients
+            self.edge_processor.train()
+            self.edge_fusion.train()
+            
             # Replace the first input block to handle fused input
             # The original first block expects in_channels, but we need it to handle in_channels + 4
             fused_channels = in_channels + 4

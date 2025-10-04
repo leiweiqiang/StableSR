@@ -136,16 +136,38 @@ class CheckpointFunction(torch.autograd.Function):
             # Tensors.
             shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
             output_tensors = ctx.run_function(*shallow_copies)
-        input_grads = torch.autograd.grad(
-            output_tensors,
-            ctx.input_tensors + ctx.input_params,
-            output_grads,
-            allow_unused=True,
-        )
+        
+        # Filter out tensors that don't require gradients to avoid the error
+        all_tensors = ctx.input_tensors + ctx.input_params
+        tensors_requiring_grad = []
+        tensor_indices = []
+        
+        for i, tensor in enumerate(all_tensors):
+            if tensor.requires_grad:
+                tensors_requiring_grad.append(tensor)
+                tensor_indices.append(i)
+        
+        if tensors_requiring_grad:
+            # Only compute gradients for tensors that require them
+            input_grads = torch.autograd.grad(
+                output_tensors,
+                tensors_requiring_grad,
+                output_grads,
+                allow_unused=True,
+            )
+            
+            # Create full gradient list with None for tensors that don't require gradients
+            full_grads = [None] * len(all_tensors)
+            for grad, idx in zip(input_grads, tensor_indices):
+                full_grads[idx] = grad
+        else:
+            # No tensors require gradients, return None for all
+            full_grads = [None] * len(all_tensors)
+        
         del ctx.input_tensors
         del ctx.input_params
         del output_tensors
-        return (None, None) + input_grads
+        return (None, None) + tuple(full_grads)
 
 
 def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):

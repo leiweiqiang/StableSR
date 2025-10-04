@@ -366,7 +366,7 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
                 c = self.cond_stage_model(c)
             
             # Compute loss with edge map
-            if edge_map is not None:
+            if self.use_edge_processing and edge_map is not None:
                 loss, loss_dict = self.p_losses(z, c, struct_cond, t, t_ori, z_gt, edge_map=edge_map)
             else:
                 loss, loss_dict = self.p_losses(z, c, struct_cond, t, t_ori, z_gt)
