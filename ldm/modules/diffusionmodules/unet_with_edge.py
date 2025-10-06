@@ -54,15 +54,16 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
         semb_channels=None,
         use_edge_processing=False,
         edge_input_channels=3,
+        edge_weight: float = 0.1,
     ):
         # Store original in_channels for edge fusion
         self.original_in_channels = in_channels
         
-        # Initialize parent class with original in_channels
-        # We'll handle edge fusion in the forward pass instead of changing the architecture
+        # Initialize parent class with original in_channels (no modification)
+        # This ensures compatibility with pre-trained weights
         super().__init__(
             image_size=image_size,
-            in_channels=in_channels,
+            in_channels=in_channels,  # Keep original in_channels
             model_channels=model_channels,
             out_channels=out_channels,
             num_res_blocks=num_res_blocks,
@@ -100,31 +101,15 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
                 target_size=64,
                 use_checkpoint=False  # Disable gradient checkpointing for edge processor to avoid gradient issues
             )
-            self.edge_fusion = EdgeFusionModule(
-                unet_channels=in_channels,
-                edge_channels=4,
-                output_channels=in_channels + 4  # Fuse to 8 channels total
-            )
+            
+            # Use additive fusion instead of concatenation to avoid channel mismatch
+            # This allows us to keep the original input channels and add edge features
+            self.edge_weight = float(edge_weight) if edge_weight is not None else 0.1
             
             # Ensure edge processing modules require gradients
             self.edge_processor.train()
-            self.edge_fusion.train()
-            
-            # Replace the first input block to handle fused input
-            # The original first block expects in_channels, but we need it to handle in_channels + 4
-            fused_channels = in_channels + 4
-            self.input_blocks[0] = TimestepEmbedSequential(
-                conv_nd(dims, fused_channels, model_channels, 3, padding=1)
-            )
-            
-            # Also need to replace the first ResBlockDual to handle the correct input channels
-            # The first ResBlockDual should expect model_channels input (from the conv layer above)
-            # but we need to make sure its skip connection is set up correctly
-            # Actually, the first ResBlockDual should be fine since it expects model_channels input
-            # The issue might be elsewhere - let's check the channel flow
         else:
             self.edge_processor = None
-            self.edge_fusion = None
         
         # Store edge processing configuration
         self.use_edge_processing = use_edge_processing
@@ -155,8 +140,9 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
             # Process edge map to get 64x64x4 features
             edge_features = self.edge_processor(edge_map)
             
-            # Fuse U-Net input with edge features
-            x = self.edge_fusion(x, edge_features)
+            # Add edge features as additional conditioning using weighted addition
+            # This preserves the original input channels and avoids weight incompatibility
+            x = x + edge_features * self.edge_weight
         
         # Call parent forward method
         return super().forward(
@@ -183,33 +169,12 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
         
         return self.edge_processor(edge_map)
     
-    def fuse_with_edge(self, unet_input, edge_map):
-        """
-        Fuse U-Net input with edge map
-        
-        Args:
-            unet_input: U-Net input tensor [B, 4, 64, 64]
-            edge_map: Edge map tensor [B, 3, H, W]
-            
-        Returns:
-            fused_input: Fused input tensor [B, 8, 64, 64]
-        """
-        if not self.use_edge_processing:
-            raise ValueError("Edge processing is not enabled")
-        
-        edge_features = self.edge_processor(edge_map)
-        return self.edge_fusion(unet_input, edge_features)
-    
     def _ensure_edge_modules_require_grad(self):
         """
         Ensure all edge processing modules require gradients for training
         """
         if self.edge_processor is not None:
             for param in self.edge_processor.parameters():
-                param.requires_grad = True
-        
-        if self.edge_fusion is not None:
-            for param in self.edge_fusion.parameters():
                 param.requires_grad = True
     
 
@@ -262,11 +227,6 @@ def test_unet_with_edge():
     edge_features = model.get_edge_features(edge_map)
     print(f"Edge features: {edge_features.shape}")
     assert edge_features.shape == (batch_size, 4, 64, 64), f"Expected {(batch_size, 4, 64, 64)}, got {edge_features.shape}"
-    
-    # Test fusion
-    fused = model.fuse_with_edge(unet_input, edge_map)
-    print(f"Fused input: {fused.shape}")
-    assert fused.shape == (batch_size, 8, 64, 64), f"Expected {(batch_size, 8, 64, 64)}, got {fused.shape}"
     
     print("UNetModelDualcondV2WithEdge test passed!")
 

@@ -1,6 +1,6 @@
 sf: 4
 model:
-  base_learning_rate: 5.0e-05
+  base_learning_rate: 3.0e-05  # Reduced learning rate for better stability
   target: ldm.models.diffusion.ddpm_with_edge.LatentDiffusionSRTextWTWithEdge
   params:
     # parameterization: "v"
@@ -24,9 +24,10 @@ model:
     random_size: False
     time_replace: 1000
     use_usm: True
-    # Edge processing parameters
+    # Edge processing parameters - Fixed configuration
     use_edge_processing: True
     edge_input_channels: 3
+    edge_weight: 0.1  # Weight for edge features
     #P2 weighting, we do not use in final version
     p2_gamma: ~
     p2_k: ~
@@ -50,7 +51,7 @@ model:
         use_checkpoint: False
         legacy: False
         semb_channels: 256
-        # Edge processing parameters
+        # Edge processing parameters - Fixed configuration
         use_edge_processing: True
         edge_input_channels: 3
 
@@ -134,8 +135,8 @@ degradation:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 2
-    num_workers: 6
+    batch_size: 1  # Reduced batch size for better memory management
+    num_workers: 4  # Reduced workers for stability
     wrap: false
     train:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
@@ -204,7 +205,7 @@ test_data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 1
-    num_workers: 6
+    num_workers: 4
     wrap: false
     test:
       target: basicsr.data.realesrgan_dataset.RealESRGANDataset
@@ -251,5 +252,5 @@ lightning:
   trainer:
     benchmark: True
     max_steps: 2000 #800000
-    accumulate_grad_batches: 6
+    accumulate_grad_batches: 8  # Increased accumulation for better gradient stability
     # Note: DDP configuration handled in main.py

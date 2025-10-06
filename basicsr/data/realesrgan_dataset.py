@@ -182,11 +182,21 @@ class RealESRGANDataset(data.Dataset):
         # Convert float32 [0,1] to uint8 [0,255] for Canny edge detection
         img_gt_gray_uint8 = (img_gt_gray * 255).astype(np.uint8)
         
-        # Apply Gaussian blur (reduces noise, improves edge detection)
-        img_gt_blurred = cv2.GaussianBlur(img_gt_gray_uint8, (5, 5), 1.4)
+        # Apply stronger Gaussian blur to reduce noise and get cleaner edges
+        img_gt_blurred = cv2.GaussianBlur(img_gt_gray_uint8, (7, 7), 2.0)
         
-        # Apply Canny edge detector
-        img_edge = cv2.Canny(img_gt_blurred, threshold1=100, threshold2=200)
+        # Use adaptive Canny edge detector with better thresholds
+        # Calculate adaptive thresholds based on image statistics
+        median = np.median(img_gt_blurred)
+        lower_thresh = int(max(0, 0.7 * median))
+        upper_thresh = int(min(255, 1.3 * median))
+        
+        # Apply Canny edge detector with adaptive thresholds
+        img_edge = cv2.Canny(img_gt_blurred, threshold1=lower_thresh, threshold2=upper_thresh)
+        
+        # Apply morphological operations to clean up the edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        img_edge = cv2.morphologyEx(img_edge, cv2.MORPH_CLOSE, kernel)
         
         # Convert to 3-channel for consistency
         img_edge = cv2.cvtColor(img_edge, cv2.COLOR_GRAY2BGR)

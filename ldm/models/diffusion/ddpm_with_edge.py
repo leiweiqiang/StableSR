@@ -12,6 +12,7 @@ from .ddpm import LatentDiffusionSRTextWT
 from ldm.modules.diffusionmodules.unet_with_edge import UNetModelDualcondV2WithEdge
 from ldm.util import default
 from ldm.util import instantiate_from_config
+from ldm.modules.diffusionmodules.util import noise_like
 import pytorch_lightning as pl
 
 
@@ -53,25 +54,23 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         # Store edge processing configuration
         self.use_edge_processing = use_edge_processing
         self.edge_input_channels = edge_input_channels
+        # Consume optional edge_weight from config to avoid passing to base class
+        edge_weight = kwargs.pop('edge_weight', None)
         
-        # Store original ignore_keys to extend them for edge processing
-        original_ignore_keys = kwargs.get('ignore_keys', [])
-        if use_edge_processing:
-            # Add keys to ignore when loading checkpoint for edge processing models
-            edge_ignore_keys = [
-                'model.diffusion_model.input_blocks.0.0.weight',
-                'model.diffusion_model.input_blocks.0.0.bias',
-            ]
-            kwargs['ignore_keys'] = original_ignore_keys + edge_ignore_keys
-            
-            # Modify unet_config to use edge-enabled UNet if it exists in kwargs
-            if 'unet_config' in kwargs:
-                unet_config = kwargs['unet_config']
-                if hasattr(unet_config, 'target'):
-                    unet_config.target = 'ldm.modules.diffusionmodules.unet_with_edge.UNetModelDualcondV2WithEdge'
-                if hasattr(unet_config, 'params'):
-                    unet_config.params.use_edge_processing = True
-                    unet_config.params.edge_input_channels = edge_input_channels
+        # No need to ignore keys since we're using additive fusion instead of concatenation
+        # This ensures compatibility with pre-trained weights
+        
+        # Modify unet_config to use edge-enabled UNet if it exists in kwargs
+        if use_edge_processing and 'unet_config' in kwargs:
+            unet_config = kwargs['unet_config']
+            if hasattr(unet_config, 'target'):
+                unet_config.target = 'ldm.modules.diffusionmodules.unet_with_edge.UNetModelDualcondV2WithEdge'
+            if hasattr(unet_config, 'params'):
+                unet_config.params.use_edge_processing = True
+                unet_config.params.edge_input_channels = edge_input_channels
+                # Forward edge_weight to UNet if provided
+                if edge_weight is not None:
+                    unet_config.params.edge_weight = edge_weight
         
         # Initialize parent class
         super().__init__(
@@ -97,50 +96,24 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
             *args, **kwargs
         )
         
-        # Initialize edge processing input layer weights if needed
-        if use_edge_processing and hasattr(self, 'model'):
-            self._initialize_edge_input_weights()
-    
-    def _initialize_edge_input_weights(self):
-        """
-        Initialize the input layer weights for edge processing.
-        This is needed because we ignore the original input layer weights during checkpoint loading
-        when edge processing is enabled (due to channel mismatch).
-        """
-        if not self.use_edge_processing:
-            return
-            
-        # Get the input layer (first conv layer in input_blocks)
-        input_layer = self.model.diffusion_model.input_blocks[0][0]
-        
-        # Initialize the additional channels (for edge features) with small random values
-        # Keep the original 4 channels as zeros (they will be filled by edge fusion)
-        with torch.no_grad():
-            if hasattr(input_layer, 'weight'):
-                # Get the current weight shape [out_channels, in_channels, kernel_h, kernel_w]
-                weight = input_layer.weight
-                
-                # Initialize additional channels (channels 4-7) with small random values
-                # These will be used for edge features
-                if weight.shape[1] > 4:  # Only if we have more than 4 input channels
-                    # Initialize additional channels with small random values
-                    nn.init.normal_(weight[:, 4:, :, :], mean=0.0, std=0.02)
-                    
-                    # Zero out the original 4 channels (they will be handled by edge fusion)
-                    weight[:, :4, :, :].zero_()
-                    
-                    print(f"Initialized edge processing input layer weights: {weight.shape}")
+        # No need to initialize edge input weights since we're using additive fusion
     
     def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
         """
-        Override init_from_ckpt to handle edge processing weight initialization
+        Override init_from_ckpt to handle edge processing weight loading
         """
-        # Call parent method
-        super().init_from_ckpt(path, ignore_keys, only_model)
+        # Add keys to ignore when loading checkpoint for edge processing models
+        # This handles the case where the checkpoint was saved with concatenation approach (8 channels)
+        # but we're now using additive fusion approach (4 channels)
+        if self.use_edge_processing:
+            edge_ignore_keys = [
+                'model.diffusion_model.input_blocks.0.0.weight',
+                'model.diffusion_model.input_blocks.0.0.bias',
+            ]
+            ignore_keys = ignore_keys + edge_ignore_keys
         
-        # Initialize edge input weights after checkpoint loading
-        if self.use_edge_processing and hasattr(self, 'model'):
-            self._initialize_edge_input_weights()
+        # Call parent method with updated ignore_keys
+        super().init_from_ckpt(path, ignore_keys, only_model)
     
     def get_input(self, batch, k=None, return_first_stage_outputs=False, force_c_encode=False,
                   cond_key=None, return_original_cond=False, bs=None, val=False, text_cond=[''], return_gt=False, resize_lq=True):
@@ -167,11 +140,13 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
             edge_map = batch['img_edge'].cuda()
             edge_map = edge_map.to(memory_format=torch.contiguous_format).float()
             
-            # Normalize edge map to [-1, 1] range
-            edge_map = edge_map * 2.0 - 1.0
+            # Edge map should already be in [0, 1] range from dataset
+            # Only normalize to [-1, 1] if it's not already in that range
+            if edge_map.max() <= 1.0 and edge_map.min() >= 0.0:
+                edge_map = edge_map * 2.0 - 1.0
             
-            # Ensure edge_map requires gradients for training
-            edge_map = edge_map.requires_grad_(True)
+            # Do NOT make edge_map require gradients - it should be treated as input data
+            # edge_map = edge_map.requires_grad_(True)  # Remove this line
             
             if bs is not None:
                 edge_map = edge_map[:bs]
@@ -188,11 +163,84 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         """
         Override apply_model to pass edge_map to the UNet
         """
-        if self.use_edge_processing and edge_map is not None:
-            # Call the diffusion model directly to bypass DiffusionWrapper limitations
-            return self.model.diffusion_model(x_noisy, t, context=cond, struct_cond=struct_cond, edge_map=edge_map, **kwargs)
+        if isinstance(cond, dict):
+            # hybrid case, cond is expected to be a dict
+            pass
         else:
-            return self.model(x_noisy, t, context=cond, struct_cond=struct_cond, **kwargs)
+            if not isinstance(cond, list):
+                cond = [cond]
+            key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
+            cond = {key: cond}
+
+        # Add edge_map to cond dict if provided
+        if self.use_edge_processing and edge_map is not None:
+            cond['edge_map'] = edge_map
+        
+        # Call the model with the same pattern as the original
+        return self.model(x_noisy, t, **cond, struct_cond=struct_cond)
+    
+    def p_mean_variance(self, x, c, struct_cond, t, clip_denoised=True, return_codebook_ids=False, quantize_denoised=False, return_x0=False, score_corrector=None, corrector_kwargs=None, edge_map=None):
+        """
+        Override p_mean_variance to handle edge_map parameter
+        """
+        t_in = t
+        model_out = self.apply_model(x, t_in, c, struct_cond, return_codebook_ids=return_codebook_ids, edge_map=edge_map)
+
+        if score_corrector is not None:
+            assert self.parameterization == "eps"
+            model_out = score_corrector.modify_score(self, model_out, x, t, c, **corrector_kwargs)
+
+        if self.parameterization == "eps":
+            x_recon = self.predict_start_from_noise(x, t=t, noise=model_out)
+        elif self.parameterization == "x0":
+            x_recon = model_out
+        else:
+            raise NotImplementedError()
+
+        if clip_denoised:
+            x_recon.clamp_(-1., 1.)
+        if quantize_denoised:
+            x_recon, _, *_ = self.first_stage_model.quantize(x_recon)
+        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
+        if return_codebook_ids:
+            return model_mean, posterior_variance, posterior_log_variance, model_out
+        elif return_x0:
+            return model_mean, posterior_variance, posterior_log_variance, x_recon
+        else:
+            return model_mean, posterior_variance, posterior_log_variance
+    
+    def p_sample(self, x, c, struct_cond, t, clip_denoised=False, repeat_noise=False,
+                 return_codebook_ids=False, quantize_denoised=False, return_x0=False,
+                 temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None, t_replace=None,
+                 unconditional_conditioning=None, unconditional_guidance_scale=None,
+                 reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000], edge_map=None):
+        """
+        Override p_sample to handle edge_map parameter
+        """
+        b, *_, device = *x.shape, x.device
+        outputs = self.p_mean_variance(x=x, c=c, struct_cond=struct_cond, t=t, clip_denoised=clip_denoised,
+                                       return_codebook_ids=return_codebook_ids,
+                                       quantize_denoised=quantize_denoised,
+                                       return_x0=return_x0,
+                                       edge_map=edge_map)
+        if return_codebook_ids:
+            model_mean, _, model_log_variance, logits = outputs
+        elif return_x0:
+            model_mean, _, model_log_variance, x_recon = outputs
+        else:
+            model_mean, _, model_log_variance = outputs
+
+        noise = noise_like(x.shape, device, repeat_noise) * temperature
+        if noise_dropout > 0.:
+            noise = torch.nn.functional.dropout(noise, p=noise_dropout)
+        # no noise when t == 0
+        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
+        if return_codebook_ids:
+            return model_mean + nonzero_mask * torch.exp(0.5 * model_log_variance) * noise, logits
+        elif return_x0:
+            return model_mean + nonzero_mask * torch.exp(0.5 * model_log_variance) * noise, x_recon
+        else:
+            return model_mean + nonzero_mask * torch.exp(0.5 * model_log_variance) * noise
     
     def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, noise=None, edge_map=None):
         """

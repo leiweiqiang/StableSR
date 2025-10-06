@@ -1,0 +1,177 @@
+{
+  "evaluation_info": {
+    "timestamp": "2025-10-05T04:49:14.226293",
+    "model_path": "./logs/2025-10-05T01-24-44_stablesr_edge_T6_DIV2K_2005_10_04/checkpoints/last.ckpt",
+    "config_path": "./configs/stableSRNew/v2-finetune_text_T_512_edge.yaml",
+    "dataset": "DIV2K Validation Set",
+    "num_samples": 10,
+    "ddpm_steps": 50,
+    "upscale_factor": 4.0,
+    "colorfix_type": "adain",
+    "device": "cuda"
+  },
+  "summary": {
+    "total_images": 10,
+    "average_psnr": 0,
+    "best_psnr": 0,
+    "worst_psnr": 0
+  },
+  "detailed_results": [
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0814.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0814.png",
+      "psnr": 8.59406304313663,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    },
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0887.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0887.png",
+      "psnr": 5.046985789808884,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    },
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0804.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0804.png",
+      "psnr": 4.481827933730884,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    },
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0832.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0832.png",
+      "psnr": 6.667532116362002,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    },
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0836.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0836.png",
+      "psnr": 3.840712379920546,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    },
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0812.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0812.png",
+      "psnr": 5.836400092976289,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    },
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0895.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0895.png",
+      "psnr": 7.405249990166071,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    },
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0829.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0829.png",
+      "psnr": 8.29792680646651,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    },
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0870.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0870.png",
+      "psnr": 7.667166410174639,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    },
+    {
+      "val_file": "/tmp/tmpfnk0cm8a/val/0818.png",
+      "gt_file": "/tmp/tmpfnk0cm8a/gt/0818.png",
+      "psnr": 3.7129977990691376,
+      "sr_shape": [
+        512,
+        512,
+        3
+      ],
+      "gt_shape": [
+        512,
+        512,
+        3
+      ]
+    }
+  ],
+  "model_info": {
+    "model_type": "StableSR Edge",
+    "parameters": "920.95M",
+    "architecture": "LatentDiffusionSRTextWTWithEdge",
+    "edge_processing": true
+  }
+}

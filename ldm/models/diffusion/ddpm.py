@@ -3166,11 +3166,13 @@ class LatentDiffusionSRTextWT(DDPM):
         use_ddim = ddim_steps is not None
 
         log = dict()
-        z, c_lq, z_gt, x, gt, yrec, xc = self.get_input(batch, self.first_stage_key,
+        inputs = self.get_input(batch, self.first_stage_key,
                                            return_first_stage_outputs=True,
                                            force_c_encode=True,
                                            return_original_cond=True,
                                            bs=N, val=True)
+        # Some subclasses may return additional items (e.g., edge_map). We only need the first 7 here.
+        z, c_lq, z_gt, x, gt, yrec, xc = inputs[:7]
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
         if self.test_gt:
@@ -3385,25 +3387,25 @@ class DiffusionWrapper(pl.LightningModule):
         self.conditioning_key = conditioning_key
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm']
 
-    def forward(self, x, t, c_concat: list = None, c_crossattn: list = None, struct_cond=None, seg_cond=None):
+    def forward(self, x, t, c_concat: list = None, c_crossattn: list = None, struct_cond=None, seg_cond=None, edge_map=None):
         if self.conditioning_key is None:
-            out = self.diffusion_model(x, t)
+            out = self.diffusion_model(x, t, edge_map=edge_map)
         elif self.conditioning_key == 'concat':
             xc = torch.cat([x] + c_concat, dim=1)
-            out = self.diffusion_model(xc, t)
+            out = self.diffusion_model(xc, t, edge_map=edge_map)
         elif self.conditioning_key == 'crossattn':
             cc = torch.cat(c_crossattn, 1)
             if seg_cond is None:
-                out = self.diffusion_model(x, t, context=cc, struct_cond=struct_cond)
+                out = self.diffusion_model(x, t, context=cc, struct_cond=struct_cond, edge_map=edge_map)
             else:
-                out = self.diffusion_model(x, t, context=cc, struct_cond=struct_cond, seg_cond=seg_cond)
+                out = self.diffusion_model(x, t, context=cc, struct_cond=struct_cond, seg_cond=seg_cond, edge_map=edge_map)
         elif self.conditioning_key == 'hybrid':
             xc = torch.cat([x] + c_concat, dim=1)
             cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(xc, t, context=cc)
+            out = self.diffusion_model(xc, t, context=cc, edge_map=edge_map)
         elif self.conditioning_key == 'adm':
             cc = c_crossattn[0]
-            out = self.diffusion_model(x, t, y=cc)
+            out = self.diffusion_model(x, t, y=cc, edge_map=edge_map)
         else:
             raise NotImplementedError()
 
