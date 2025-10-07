@@ -17,9 +17,10 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
     
     Key features:
     - Processes edge maps to generate 64x64x4 latent features
-    - Fuses edge features with U-Net input (64x64x4 + 64x64x4 = 64x64x8)
+    - Concatenates edge features with U-Net input (64x64x4 + 64x64x4 = 64x64x8)
+    - Uses 8-channel input for the U-Net to accommodate edge concatenation
     - Maintains compatibility with original UNetModelDualcondV2
-    """
+"""
     
     def __init__(
         self,
@@ -59,11 +60,11 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
         # Store original in_channels for edge fusion
         self.original_in_channels = in_channels
         
-        # Initialize parent class with original in_channels (no modification)
-        # This ensures compatibility with pre-trained weights
+        # Initialize parent class with the provided in_channels (8 for concatenation)
+        # This creates the U-Net with 8 input channels for edge concatenation
         super().__init__(
             image_size=image_size,
-            in_channels=in_channels,  # Keep original in_channels
+            in_channels=in_channels,  # Use provided in_channels (8)
             model_channels=model_channels,
             out_channels=out_channels,
             num_res_blocks=num_res_blocks,
@@ -124,7 +125,7 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
         Forward pass with edge map processing support
         
         Args:
-            x: Input tensor [B, C, H, W] - U-Net input (usually 64x64x4)
+            x: Input tensor [B, 4, H, W] - U-Net input (64x64x4)
             timesteps: Diffusion timesteps
             context: Text conditioning
             struct_cond: Structural conditioning
@@ -133,16 +134,20 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
             **kwargs: Additional arguments
             
         Returns:
-            Output tensor [B, C, H, W]
+            Output tensor [B, 4, H, W]
+            
+        Note:
+            When edge_map is provided, x and edge_features are concatenated
+            to create 8-channel input [B, 8, H, W] for the U-Net
         """
         # Process edge map if provided and edge processing is enabled
         if self.use_edge_processing and edge_map is not None:
             # Process edge map to get 64x64x4 features
             edge_features = self.edge_processor(edge_map)
             
-            # Add edge features as additional conditioning using weighted addition
-            # This preserves the original input channels and avoids weight incompatibility
-            x = x + edge_features * self.edge_weight
+            # Concatenate edge features with U-Net input (4 + 4 = 8 channels)
+            # This creates 8-channel input for the U-Net
+            x = torch.cat([x, edge_features], dim=1)
         
         # Call parent forward method
         return super().forward(

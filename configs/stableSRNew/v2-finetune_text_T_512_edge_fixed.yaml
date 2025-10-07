@@ -37,7 +37,7 @@ model:
       target: ldm.modules.diffusionmodules.unet_with_edge.UNetModelDualcondV2WithEdge
       params:
         image_size: 32 # unused
-        in_channels: 4
+        in_channels: 8
         out_channels: 4
         model_channels: 320
         attention_resolutions: [ 4, 2, 1 ]

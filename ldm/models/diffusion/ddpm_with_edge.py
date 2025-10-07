@@ -103,8 +103,8 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         Override init_from_ckpt to handle edge processing weight loading
         """
         # Add keys to ignore when loading checkpoint for edge processing models
-        # This handles the case where the checkpoint was saved with concatenation approach (8 channels)
-        # but we're now using additive fusion approach (4 channels)
+        # This handles the case where the checkpoint was saved with different channel configurations
+        # We're now using concatenation approach (8 channels) for edge processing
         if self.use_edge_processing:
             edge_ignore_keys = [
                 'model.diffusion_model.input_blocks.0.0.weight',
