@@ -194,3 +194,4 @@ else
     echo "    bash setup_notion.sh"
     echo ""
 fi
+
