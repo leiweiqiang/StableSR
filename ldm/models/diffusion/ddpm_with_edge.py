@@ -49,11 +49,13 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         mix_ratio=0.0,
         use_edge_processing=False,
         edge_input_channels=3,
+        edge_loss_weight=0.1,
         *args, **kwargs
     ):
         # Store edge processing configuration
         self.use_edge_processing = use_edge_processing
         self.edge_input_channels = edge_input_channels
+        self.edge_loss_weight = edge_loss_weight
         # Consume optional edge_weight from config to avoid passing to base class
         edge_weight = kwargs.pop('edge_weight', None)
         
@@ -467,6 +469,23 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
 
         loss_dict.update({f'{prefix}/loss_simple_ema': loss_simple.mean().detach()})
+
+        # Add edge loss if edge_map is provided
+        if self.use_edge_processing and edge_map is not None:
+            # Encode edge_map to latent space for comparison with model_output_
+            with torch.no_grad():
+                edge_latent = self.encode_first_stage(edge_map)
+                edge_latent = self.get_first_stage_encoding(edge_latent).detach()
+            
+            # Calculate MSE (L2) loss between model output and edge latent
+            edge_loss = F.mse_loss(model_output_, edge_latent, reduction='mean')
+            
+            # Add weighted edge loss to total loss
+            loss = loss + self.edge_loss_weight * edge_loss
+            
+            # Log edge loss
+            loss_dict.update({f'{prefix}/edge_loss': edge_loss.detach()})
+            loss_dict.update({f'{prefix}/edge_loss_weighted': (self.edge_loss_weight * edge_loss).detach()})
 
         return loss, loss_dict
     

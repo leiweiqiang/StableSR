@@ -27,7 +27,8 @@ model:
     # Edge processing parameters - Fixed configuration
     use_edge_processing: True
     edge_input_channels: 3
-    edge_weight: 0.1  # Weight for edge features
+    edge_weight: 0.1  # Weight for edge features in UNet
+    edge_loss_weight: 0.1  # Weight for edge loss in training
     #P2 weighting, we do not use in final version
     p2_gamma: ~
     p2_k: ~
