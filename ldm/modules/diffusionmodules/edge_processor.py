@@ -90,6 +90,11 @@ class EdgeMapProcessor(nn.Module):
         # Adaptive pooling to ensure output size
         x = self.adaptive_pool(x)
         
+        # Normalize output to reasonable range for latent space
+        # Latent typically ranges in [-4, 4], so we use tanh to limit range
+        # and scale by 0.5 to keep edge features subtle
+        x = torch.tanh(x) * 0.5
+        
         return x
 
 

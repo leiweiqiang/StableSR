@@ -138,15 +138,24 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
             
         Note:
             When edge_map is provided, x and edge_features are concatenated
-            to create 8-channel input [B, 8, H, W] for the U-Net
+            to create 8-channel input [B, 8, H, W] for the U-Net.
+            When edge_map is None, zeros are concatenated to maintain 8-channel input.
         """
         # Process edge map if provided and edge processing is enabled
         if self.use_edge_processing and edge_map is not None:
             # Process edge map to get 64x64x4 features
+            # Note: edge_processor now includes normalization (tanh * 0.5)
             edge_features = self.edge_processor(edge_map)
             
             # Concatenate edge features with U-Net input (4 + 4 = 8 channels)
             # This creates 8-channel input for the U-Net
+            x = torch.cat([x, edge_features], dim=1)
+        elif self.use_edge_processing and edge_map is None:
+            # When edge processing is enabled but no edge map is provided,
+            # create zero edge features to maintain 8-channel input
+            batch_size, _, height, width = x.shape
+            edge_features = torch.zeros(batch_size, 4, height, width, 
+                                      device=x.device, dtype=x.dtype)
             x = torch.cat([x, edge_features], dim=1)
         
         # Call parent forward method

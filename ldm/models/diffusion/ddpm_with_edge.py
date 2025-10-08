@@ -101,19 +101,62 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
     def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
         """
         Override init_from_ckpt to handle edge processing weight loading
+        Properly extends 4-channel input weights to 8-channel for edge processing
         """
-        # Add keys to ignore when loading checkpoint for edge processing models
-        # This handles the case where the checkpoint was saved with different channel configurations
-        # We're now using concatenation approach (8 channels) for edge processing
-        if self.use_edge_processing:
-            edge_ignore_keys = [
-                'model.diffusion_model.input_blocks.0.0.weight',
-                'model.diffusion_model.input_blocks.0.0.bias',
-            ]
-            ignore_keys = ignore_keys + edge_ignore_keys
+        import torch
         
-        # Call parent method with updated ignore_keys
-        super().init_from_ckpt(path, ignore_keys, only_model)
+        print(f"Loading model from {path}")
+        pl_sd = torch.load(path, map_location="cpu")
+        if "global_step" in pl_sd:
+            print(f"Global Step: {pl_sd['global_step']}")
+        sd = pl_sd["state_dict"]
+        
+        # Handle 4->8 channel conversion for edge processing
+        if self.use_edge_processing:
+            # Check if the first conv layer needs channel expansion
+            first_conv_key = 'model.diffusion_model.input_blocks.0.0.weight'
+            if first_conv_key in sd:
+                pretrained_weight = sd[first_conv_key]  # [out_ch, 4, k, k]
+                
+                # Check if our model expects 8 channels but checkpoint has 4
+                current_weight = self.model.diffusion_model.input_blocks[0][0].weight
+                if current_weight.shape[1] == 8 and pretrained_weight.shape[1] == 4:
+                    print(f"Expanding input conv from 4 to 8 channels for edge processing")
+                    # Create new 8-channel weight
+                    # First 4 channels: use pretrained weights
+                    # Last 4 channels: initialize with zeros (edge features start with no influence)
+                    new_weight = torch.zeros(
+                        pretrained_weight.shape[0],  # out_channels
+                        8,  # in_channels (4 latent + 4 edge)
+                        pretrained_weight.shape[2],  # kernel_h
+                        pretrained_weight.shape[3],  # kernel_w
+                        dtype=pretrained_weight.dtype
+                    )
+                    # Copy pretrained weights to first 4 channels
+                    new_weight[:, :4, :, :] = pretrained_weight
+                    # Initialize edge channels with small random values
+                    new_weight[:, 4:, :, :] = torch.randn_like(new_weight[:, 4:, :, :]) * 0.01
+                    
+                    sd[first_conv_key] = new_weight
+                    print(f"✓ Extended {first_conv_key} from {pretrained_weight.shape} to {new_weight.shape}")
+        
+        # Load the state dict
+        keys = list(sd.keys())
+        for k in keys:
+            for ik in ignore_keys:
+                if k.startswith(ik):
+                    print("Deleting key {} from state_dict.".format(k))
+                    del sd[k]
+        
+        m, u = self.load_state_dict(sd, strict=False)
+        if len(m) > 0:
+            print("missing keys:")
+            print(m)
+        if len(u) > 0:
+            print("unexpected keys:")
+            print(u)
+        
+        print(f"✓ Model loaded successfully from {path}")
     
     def get_input(self, batch, k=None, return_first_stage_outputs=False, force_c_encode=False,
                   cond_key=None, return_original_cond=False, bs=None, val=False, text_cond=[''], return_gt=False, resize_lq=True):
@@ -241,6 +284,132 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
             return model_mean + nonzero_mask * torch.exp(0.5 * model_log_variance) * noise, x_recon
         else:
             return model_mean + nonzero_mask * torch.exp(0.5 * model_log_variance) * noise
+    
+    @torch.no_grad()
+    def p_sample_loop(self, cond, struct_cond, shape, return_intermediates=False,
+                      x_T=None, verbose=True, callback=None, timesteps=None, quantize_denoised=False,
+                      mask=None, x0=None, img_callback=None, start_T=None,
+                      log_every_t=None, time_replace=None, adain_fea=None, interfea_path=None,
+                      unconditional_conditioning=None,
+                      unconditional_guidance_scale=None,
+                      reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000],
+                      edge_map=None):
+        """
+        Override p_sample_loop to handle edge_map parameter
+        """
+        from tqdm import tqdm
+        from einops import repeat
+        
+        if not log_every_t:
+            log_every_t = self.log_every_t
+        device = self.betas.device
+        b = shape[0]
+        if x_T is None:
+            img = torch.randn(shape, device=device)
+        else:
+            img = x_T
+
+        intermediates = [img]
+        if timesteps is None:
+            timesteps = self.num_timesteps
+
+        iterator = tqdm(reversed(range(0, timesteps)), desc='Sampling t', total=timesteps) if verbose else reversed(
+            range(0, timesteps))
+
+        if mask is not None:
+            assert x0 is not None
+            assert x0.shape[2:3] == mask.shape[2:3]  # spatial size has to match
+
+        batch_list = []
+        for i in iterator:
+            # Handle time_replace logic like the original implementation
+            if time_replace is None or time_replace == 1000:
+                ts = torch.full((b,), i, device=device, dtype=torch.long)
+                t_replace = None
+            else:
+                ts = torch.full((b,), i, device=device, dtype=torch.long)
+                t_replace = repeat(torch.tensor([self.ori_timesteps[i]]), '1 -> b', b=img.size(0))
+                t_replace = t_replace.long().to(device)
+            
+            if self.shorten_cond_schedule:
+                assert self.model.conditioning_key != 'hybrid'
+                tc = self.cond_ids[ts].to(cond.device)
+                cond = self.q_sample(x_start=cond, t=tc, noise=torch.randn_like(cond))
+
+            # Generate structural conditioning based on t_replace
+            if t_replace is not None:
+                if start_T is not None:
+                    if self.ori_timesteps[i] > start_T:
+                        continue
+                struct_cond_input = self.structcond_stage_model(struct_cond, t_replace)
+            else:
+                if start_T is not None:
+                    if i > start_T:
+                        continue
+                struct_cond_input = self.structcond_stage_model(struct_cond, ts)
+
+            if mask is not None:
+                assert x0 is not None
+                img_orig = self.q_sample(x0, ts)
+                img = img_orig * mask + (1. - mask) * img
+
+            img = self.p_sample(img, cond, struct_cond_input, ts, clip_denoised=self.clip_denoised,
+                                quantize_denoised=quantize_denoised, t_replace=t_replace,
+                                unconditional_conditioning=unconditional_conditioning,
+                                unconditional_guidance_scale=unconditional_guidance_scale,
+                                reference_sr=reference_sr,
+                                reference_lr=reference_lr,
+                                reference_step=reference_step,
+                                reference_range=reference_range,
+                                edge_map=edge_map)
+
+            if adain_fea is not None:
+                if i < 1:
+                    from scripts.wavelet_color_fix import adaptive_instance_normalization
+                    img = adaptive_instance_normalization(img, adain_fea)
+            if mask is not None:
+                img_orig = self.q_sample(x0, ts)
+                img = img_orig * mask + (1. - mask) * img
+
+            if i % log_every_t == 0 or i == timesteps - 1:
+                intermediates.append(img)
+            if callback: callback(i)
+            if img_callback: img_callback(img, i)
+
+        if return_intermediates:
+            return img, intermediates
+        return img
+
+    @torch.no_grad()
+    def sample(self, cond, struct_cond, batch_size=16, return_intermediates=False, x_T=None,
+               verbose=True, timesteps=None, quantize_denoised=False,
+               mask=None, x0=None, shape=None, time_replace=None, adain_fea=None, interfea_path=None, start_T=None,
+               unconditional_conditioning=None,
+               unconditional_guidance_scale=None,
+               reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000],
+               edge_map=None,
+               **kwargs):
+        """
+        Override sample to handle edge_map parameter
+        """
+        if shape is None:
+            shape = (batch_size, self.channels, self.image_size//8, self.image_size//8)
+        if cond is not None:
+            if isinstance(cond, dict):
+                cond = {key: cond[key][:batch_size] if not isinstance(cond[key], list) else
+                list(map(lambda x: x[:batch_size], cond[key])) for key in cond}
+            else:
+                cond = [c[:batch_size] for c in cond] if isinstance(cond, list) else cond[:batch_size]
+        return self.p_sample_loop(cond,
+                                  struct_cond,
+                                  shape,
+                                  return_intermediates=return_intermediates, x_T=x_T,
+                                  verbose=verbose, timesteps=timesteps, quantize_denoised=quantize_denoised,
+                                  mask=mask, x0=x0, time_replace=time_replace, adain_fea=adain_fea, interfea_path=interfea_path, start_T=start_T,
+                                  unconditional_conditioning=unconditional_conditioning,
+                                  unconditional_guidance_scale=unconditional_guidance_scale,
+                                  reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range,
+                                  edge_map=edge_map)
     
     def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, noise=None, edge_map=None):
         """

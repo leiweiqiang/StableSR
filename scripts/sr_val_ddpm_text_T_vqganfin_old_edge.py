@@ -149,6 +149,37 @@ def generate_edge_map(image_tensor):
 	
 	return edges_tensor.to(image_tensor.device)
 
+def generate_edge_map_from_gt(gt_image_path, target_size, device):
+	"""
+	Generate edge map from ground truth image file
+	
+	Args:
+		gt_image_path: Path to ground truth image
+		target_size: Target size for the edge map (H, W)
+		device: Device to place the tensor on
+		
+	Returns:
+		edge_map: Edge map tensor [1, 3, H, W], values in [-1, 1]
+	"""
+	# Load GT image
+	gt_image = Image.open(gt_image_path).convert("RGB")
+	
+	# Resize to target size
+	gt_image = gt_image.resize((target_size[1], target_size[0]), resample=PIL.Image.LANCZOS)
+	
+	# Convert to numpy array
+	img_np = np.array(gt_image).astype(np.float32) / 255.0
+	img_np = np.transpose(img_np, (2, 0, 1))  # Convert from [H, W, C] to [C, H, W]
+	
+	# Convert to tensor and normalize to [-1, 1]
+	img_tensor = torch.from_numpy(img_np).unsqueeze(0).float()
+	img_tensor = 2.0 * img_tensor - 1.0
+	
+	# Generate edge map using the existing function
+	edge_map = generate_edge_map(img_tensor)
+	
+	return edge_map.to(device)
+
 
 def main():
 	parser = argparse.ArgumentParser()
@@ -245,6 +276,13 @@ def main():
 		action="store_true",
 		help="Enable edge processing for enhanced super-resolution",
 	)
+	parser.add_argument(
+		"--gt-img",
+		type=str,
+		nargs="?",
+		help="path to the ground truth images directory for edge map generation",
+		default=None,
+	)
 
 	opt = parser.parse_args()
 	device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -261,6 +299,10 @@ def main():
 	print('>>>>>>>>>>edge processing>>>>>>>>>>>')
 	if opt.use_edge_processing:
 		print('Edge processing enabled - using edge-enhanced model')
+		if opt.gt_img:
+			print(f'Using GT images from: {opt.gt_img}')
+		else:
+			print('Using LR images for edge map generation')
 	else:
 		print('Edge processing disabled - using standard model')
 	print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>')
@@ -415,9 +457,46 @@ def main():
 						# Generate edge maps for each image in the batch
 						edge_maps = []
 						for i in range(init_image.size(0)):
-							edge_map = generate_edge_map(init_image[i:i+1])
+							# Get the corresponding image name for this batch item
+							batch_start_idx = n * batch_size
+							img_idx = batch_start_idx + i
+							if img_idx < len(img_list_ori):
+								img_name = img_list_ori[img_idx]
+								img_basename = os.path.splitext(os.path.basename(img_name))[0]
+								
+								if opt.gt_img:
+									# Use GT image for edge map generation
+									gt_img_path = os.path.join(opt.gt_img, img_basename + '.png')
+									if not os.path.exists(gt_img_path):
+										# Try other common extensions
+										for ext in ['.jpg', '.jpeg', '.bmp', '.tiff']:
+											alt_path = os.path.join(opt.gt_img, img_basename + ext)
+											if os.path.exists(alt_path):
+												gt_img_path = alt_path
+												break
+									
+									if os.path.exists(gt_img_path):
+										# Generate edge map from GT image
+										target_size = (init_image.size(2), init_image.size(3))  # (H, W)
+										edge_map = generate_edge_map_from_gt(gt_img_path, target_size, device)
+									else:
+										print(f"Warning: GT image not found for {img_basename}, using LR image for edge map")
+										edge_map = generate_edge_map(init_image[i:i+1])
+								else:
+									# Use LR image for edge map generation (original behavior)
+									edge_map = generate_edge_map(init_image[i:i+1])
+							else:
+								# Fallback to LR image if index is out of range
+								edge_map = generate_edge_map(init_image[i:i+1])
+							
 							edge_maps.append(edge_map)
 						edge_maps = torch.cat(edge_maps, dim=0)
+						
+						# Debug: Print edge map statistics
+						print(f"Edge maps shape: {edge_maps.shape}")
+						print(f"Edge maps range: [{edge_maps.min():.3f}, {edge_maps.max():.3f}], mean: {edge_maps.mean():.3f}")
+						print(f"Init latent shape: {init_latent.shape}")
+						print(f"Init latent range: [{init_latent.min():.3f}, {init_latent.max():.3f}], mean: {init_latent.mean():.3f}")
 						
 						# Use edge-enhanced sampling with edge maps
 						samples, _ = model.sample(
@@ -430,6 +509,10 @@ def main():
 							return_intermediates=True,
 							edge_map=edge_maps
 						)
+						
+						# Debug: Print samples statistics
+						print(f"Samples shape: {samples.shape}")
+						print(f"Samples range: [{samples.min():.3f}, {samples.max():.3f}], mean: {samples.mean():.3f}")
 					else:
 						# Use standard sampling
 						samples, _ = model.sample(cond=semantic_c, struct_cond=init_latent, batch_size=init_image.size(0), timesteps=opt.ddpm_steps, time_replace=opt.ddpm_steps, x_T=x_T, return_intermediates=True)

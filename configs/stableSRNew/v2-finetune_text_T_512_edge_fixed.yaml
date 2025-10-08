@@ -19,7 +19,7 @@ model:
     scale_factor: 0.18215
     use_ema: False
     # for training only
-    ckpt_path: /stablesr_dataset/checkpoints/stable_diffmodels/v2-1_512-ema-pruned.ckpt
+    ckpt_path: /stablesr_dataset/checkpoints/stablesr_turbo.ckpt
     unfrozen_diff: False
     random_size: False
     time_replace: 1000
@@ -59,7 +59,7 @@ model:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         # for training only
-        ckpt_path: /stablesr_dataset/checkpoints/stable_diffmodels/v2-1_512-ema-pruned.ckpt
+        ckpt_path: /stablesr_dataset/checkpoints/stablesr_turbo.ckpt
         embed_dim: 4
         monitor: val/rec_loss
         ddconfig:
@@ -143,7 +143,7 @@ data:
       params:
         queue_size: 180
         #gt_path: ['/mnt/nas-dp/dataset/DIV8K/train_HR/', '/mnt/nas-dp/dataset/df2k_ost/GT/']
-        gt_path: ['/stablesr_dataset/dataset/DIV2K/DIV2K_train_HR/']
+        gt_path: ['/stablesr_dataset/dataset/Flickr2K']
         #face_gt_path: '/mnt/nas-dp/dataset/FFHQ/1024/'
         #num_face: 10000
         crop_size: 512
@@ -240,7 +240,7 @@ test_data:
 lightning:
   modelcheckpoint:
     params:
-      every_n_train_steps: 200
+      every_n_train_steps: 2000
   callbacks:
     image_logger:
       target: main.ImageLogger
@@ -251,6 +251,6 @@ lightning:
 
   trainer:
     benchmark: True
-    max_steps: 2000 #800000
+    max_steps: 800000
     accumulate_grad_batches: 8  # Increased accumulation for better gradient stability
     # Note: DDP configuration handled in main.py
