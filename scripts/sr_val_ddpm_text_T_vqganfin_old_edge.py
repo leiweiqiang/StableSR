@@ -1,6 +1,11 @@
 """make variations of input image with edge processing support"""
 
 import argparse, os, sys, glob
+
+# Ensure we import from the current project directory, not any other StableSR installations
+current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 import PIL
 import torch
 import numpy as np
@@ -24,7 +29,7 @@ import copy
 from scripts.wavelet_color_fix import wavelet_reconstruction, adaptive_instance_normalization
 
 # Edge-specific imports
-from tra_report import EdgeDDIMSampler
+# from tra_report import EdgeDDIMSampler  # Not needed - unused import
 from ldm.models.diffusion.ddpm_with_edge import LatentDiffusionSRTextWTWithEdge
 import cv2
 
@@ -285,6 +290,15 @@ def main():
 	)
 
 	opt = parser.parse_args()
+	
+	# Expand user paths (~ symbols)
+	opt.ckpt = os.path.expanduser(opt.ckpt)
+	opt.vqgan_ckpt = os.path.expanduser(opt.vqgan_ckpt)
+	opt.init_img = os.path.expanduser(opt.init_img)
+	opt.outdir = os.path.expanduser(opt.outdir)
+	if opt.gt_img:
+		opt.gt_img = os.path.expanduser(opt.gt_img)
+	
 	device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 	print('>>>>>>>>>>color correction>>>>>>>>>>>')
