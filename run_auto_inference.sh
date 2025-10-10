@@ -53,7 +53,7 @@ show_menu() {
     echo "           StableSR Edge 推理菜单"
     echo "===================================================="
     echo ""
-    echo "1. 推理 logs 目录下全部 checkpoint (edge & no-edge)"
+    echo "1. 推理指定目录下全部 checkpoint (edge & no-edge)"
     echo ""
     echo "2. 推理指定 checkpoint 文件 (edge)"
     echo ""
@@ -90,22 +90,40 @@ inference_all_checkpoints() {
     echo "=================================================="
     echo ""
     
-    # List available directories in logs
-    echo "可用的 logs 子目录："
+    # Ask user for logs directory
+    while true; do
+        read -p "请输入 logs 目录路径 [$LOGS_DIR]: " USER_LOGS_DIR
+        USER_LOGS_DIR=${USER_LOGS_DIR:-$LOGS_DIR}
+        
+        if [ ! -d "$USER_LOGS_DIR" ]; then
+            echo "❌ 错误：目录不存在: $USER_LOGS_DIR"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ 目录存在: $USER_LOGS_DIR"
+            break
+        fi
+    done
+    
+    # List available directories in user-specified logs directory
+    echo ""
+    echo "可用的子目录："
     echo ""
     
-    # Get all directories in logs/
-    if [ ! -d "$LOGS_DIR" ]; then
-        echo "❌ 错误：logs 目录不存在: $LOGS_DIR"
+    # Get all directories in user-specified directory
+    if [ ! -d "$USER_LOGS_DIR" ]; then
+        echo "❌ 错误：目录不存在: $USER_LOGS_DIR"
         read -p "按 Enter 返回菜单..."
         return
     fi
     
     # Get list of directories
-    mapfile -t LOG_DIRS < <(find "$LOGS_DIR" -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort)
+    mapfile -t LOG_DIRS < <(find "$USER_LOGS_DIR" -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort)
     
     if [ ${#LOG_DIRS[@]} -eq 0 ]; then
-        echo "❌ 错误：logs 目录下没有找到子目录"
+        echo "❌ 错误：目录下没有找到子目录"
         read -p "按 Enter 返回菜单..."
         return
     fi
@@ -132,12 +150,12 @@ inference_all_checkpoints() {
     
     # Determine target directory
     if [ "$DIR_CHOICE" -eq 0 ]; then
-        TARGET_LOG_DIR="$LOGS_DIR"
+        TARGET_LOG_DIR="$USER_LOGS_DIR"
         SELECTED_DIR_NAME=""
-        echo "✓ 将处理全部 logs 目录"
+        echo "✓ 将处理全部目录"
     else
         SELECTED_DIR_NAME="${LOG_DIRS[$((DIR_CHOICE-1))]}"
-        TARGET_LOG_DIR="$LOGS_DIR/$SELECTED_DIR_NAME"
+        TARGET_LOG_DIR="$USER_LOGS_DIR/$SELECTED_DIR_NAME"
         echo "✓ 将处理目录: $SELECTED_DIR_NAME"
     fi
     echo ""
@@ -186,7 +204,7 @@ inference_all_checkpoints() {
         for CKPT_FILE in "${CKPT_FILES[@]}"; do
             python scripts/auto_inference.py \
                 --ckpt "$CKPT_FILE" \
-                --logs_dir "$LOGS_DIR" \
+                --logs_dir "$USER_LOGS_DIR" \
                 --output_base "$OUTPUT_BASE" \
                 --sub_folder "edge" \
                 --init_img "$DEFAULT_INIT_IMG" \
@@ -213,7 +231,7 @@ inference_all_checkpoints() {
         for CKPT_FILE in "${CKPT_FILES[@]}"; do
             python scripts/auto_inference.py \
                 --ckpt "$CKPT_FILE" \
-                --logs_dir "$LOGS_DIR" \
+                --logs_dir "$USER_LOGS_DIR" \
                 --output_base "$OUTPUT_BASE" \
                 --sub_folder "no_edge" \
                 --init_img "$DEFAULT_INIT_IMG" \

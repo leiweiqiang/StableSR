@@ -49,7 +49,7 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
         mix_ratio=0.0,
         use_edge_processing=False,
         edge_input_channels=3,
-        edge_loss_weight=0.075,
+        edge_loss_weight=0,
         *args, **kwargs
     ):
         # Store edge processing configuration
