@@ -31,7 +31,7 @@ model:
     #P2 weighting, we do not use in final version
     p2_gamma: ~
     p2_k: ~
-    edge_loss_weight: 0.1
+    edge_loss_weight: 0.075
     # ignore_keys: []
 
     unet_config:
@@ -144,7 +144,7 @@ data:
       params:
         queue_size: 180
         #gt_path: ['/mnt/nas-dp/dataset/DIV8K/train_HR/', '/mnt/nas-dp/dataset/df2k_ost/GT/']
-        gt_path: ['/stablesr_dataset/dataset/DIV2K/DIV2K_train_HR']
+        gt_path: ['/stablesr_dataset/dataset/Flickr2K']
         #face_gt_path: '/mnt/nas-dp/dataset/FFHQ/1024/'
         #num_face: 10000
         crop_size: 512

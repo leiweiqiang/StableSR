@@ -115,6 +115,10 @@ def generate_edge_map(image_tensor):
 		
 	Returns:
 		edge_map: Edge map tensor [B, 3, H, W], values in [-1, 1]
+	
+	Note:
+		This function now matches the training-time edge map generation
+		in basicsr/data/realesrgan_dataset.py for consistency.
 	"""
 	# Convert to numpy array
 	img_np = image_tensor[0].cpu().numpy()
@@ -125,18 +129,30 @@ def generate_edge_map(image_tensor):
 	# Convert to grayscale
 	img_gray = cv2.cvtColor((img_np * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
 	
-	# Apply Gaussian blur
-	img_blurred = cv2.GaussianBlur(img_gray, (5, 5), 1.4)
+	# Apply stronger Gaussian blur (match training: kernel=(7,7), sigma=2.0)
+	img_blurred = cv2.GaussianBlur(img_gray, (7, 7), 2.0)
 	
-	# Apply Canny edge detection
-	edges = cv2.Canny(img_blurred, threshold1=100, threshold2=200)
+	# Apply adaptive Canny edge detection (match training)
+	median = np.median(img_blurred)
+	lower_thresh = int(max(0, 0.7 * median))
+	upper_thresh = int(min(255, 1.3 * median))
+	edges = cv2.Canny(img_blurred, threshold1=lower_thresh, threshold2=upper_thresh)
+	
+	# Apply morphological operations to clean up edges (match training)
+	kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+	edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 	
 	# Convert to 3 channels
 	edges_3ch = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
 	
+	# Convert to float [0, 1] first (match training pipeline)
+	edges_float = edges_3ch.astype(np.float32) / 255.0
+	
 	# Convert back to tensor format
-	edges_tensor = torch.from_numpy(edges_3ch).permute(2, 0, 1).unsqueeze(0).float()
-	edges_tensor = (edges_tensor / 127.5) - 1.0  # Normalize to [-1, 1]
+	edges_tensor = torch.from_numpy(edges_float).permute(2, 0, 1).unsqueeze(0).float()
+	
+	# Then normalize to [-1, 1]
+	edges_tensor = edges_tensor * 2.0 - 1.0
 	
 	return edges_tensor.to(image_tensor.device)
 

@@ -98,29 +98,43 @@ def find_checkpoints(logs_dir, include_last=False):
     return checkpoints
 
 
-def create_output_dir(base_output_dir, exp_name, epoch_num, create=True):
+def create_output_dir(base_output_dir, exp_name, epoch_num, sub_folder=None, create=True):
     """
-    Create output directory structure: base_output_dir/exp_name/epochs_N
+    Create output directory structure: base_output_dir/exp_name/[sub_folder/]epochs_N
     
     Args:
+        base_output_dir: Base directory for outputs
+        exp_name: Experiment name
+        epoch_num: Epoch number or "last"
+        sub_folder: Optional subfolder name under exp_name (e.g., "step4", "step200")
         create: If True, create the directory. If False, just return the path.
     
     Returns:
-        Path to output directory (with ~ expanded)
+        Path to output directory (with ~ expanded and resolved to absolute path)
     """
     # Expand ~ in base directory
     base_output_dir = os.path.expanduser(base_output_dir)
     
+    # Resolve to absolute path (follows symlinks)
+    base_output_dir = os.path.abspath(base_output_dir)
+    
     # Handle "last" checkpoint specially
     if epoch_num == "last":
-        output_path = Path(base_output_dir) / exp_name / "epochs_last"
+        epoch_dir = "epochs_last"
     else:
-        output_path = Path(base_output_dir) / exp_name / f"epochs_{int(epoch_num):d}"
+        epoch_dir = f"epochs_{int(epoch_num):d}"
+    
+    # Build path with optional subfolder
+    if sub_folder:
+        output_path = os.path.join(base_output_dir, exp_name, sub_folder, epoch_dir)
+    else:
+        output_path = os.path.join(base_output_dir, exp_name, epoch_dir)
     
     if create:
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Use os.makedirs with exist_ok to handle existing directories and symlinks
+        os.makedirs(output_path, exist_ok=True)
     
-    return str(output_path)
+    return output_path
 
 
 def calculate_metrics(output_dir, gt_img_dir, results_dict):
@@ -296,7 +310,8 @@ def calculate_metrics(output_dir, gt_img_dir, results_dict):
 def run_inference(checkpoint_path, output_dir, config_file, init_img_dir, 
                   gt_img_dir, vqgan_ckpt, ddpm_steps=200, dec_w=0.5, 
                   seed=42, n_samples=1, colorfix_type="wavelet", 
-                  use_edge_processing=True, calculate_metrics_flag=True, dry_run=False):
+                  use_edge_processing=True, use_white_edge=False, 
+                  calculate_metrics_flag=True, dry_run=False):
     """
     Run inference using sr_val_ddpm_text_T_vqganfin_old_edge.py
     
@@ -313,6 +328,7 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
         n_samples: Number of samples to generate
         colorfix_type: Type of color correction
         use_edge_processing: Whether to use edge processing
+        use_white_edge: Whether to use white (all ones) edge maps
         dry_run: If True, only print the command without executing
     """
     # Construct command
@@ -333,6 +349,9 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
     
     if use_edge_processing:
         cmd.append("--use_edge_processing")
+    
+    if use_white_edge:
+        cmd.append("--use_white_edge")
     
     # Print command
     print("\n" + "="*80)
@@ -371,6 +390,8 @@ def main():
     parser.add_argument("--output_base", type=str, 
                        default=os.path.expanduser("~/validation_results"),
                        help="Base directory for validation results")
+    parser.add_argument("--sub_folder", type=str, default=None,
+                       help="Optional subfolder name under each experiment (e.g., 'step4', 'step200')")
     
     # Data paths
     parser.add_argument("--init_img", type=str,
@@ -384,6 +405,8 @@ def main():
     parser.add_argument("--config", type=str,
                        default="configs/stableSRNew/v2-finetune_text_T_512_edge.yaml",
                        help="Path to model config file")
+    parser.add_argument("--ckpt", type=str, default=None,
+                       help="Specific checkpoint to process (if set, auto-discovery is disabled)")
     parser.add_argument("--vqgan_ckpt", type=str,
                        default=os.path.expanduser("~/checkpoints/vqgan_cfw_00011.ckpt"),
                        help="Path to VQGAN checkpoint")
@@ -404,6 +427,8 @@ def main():
     parser.add_argument("--no_edge_processing", dest="use_edge_processing", 
                        action="store_false",
                        help="Disable edge processing")
+    parser.add_argument("--use_white_edge", action="store_true", default=False,
+                       help="Use white (all ones) edge maps instead of generated edge maps")
     
     # Script options
     parser.add_argument("--dry_run", action="store_true",
@@ -425,27 +450,57 @@ def main():
     
     args = parser.parse_args()
     
-    # Find all checkpoints
-    print(f"Searching for checkpoints in: {args.logs_dir}")
-    if not args.include_last:
-        print("Note: Excluding last.ckpt files")
+    # Check if specific checkpoint is provided
+    if args.ckpt:
+        # Single checkpoint mode
+        print(f"Single checkpoint mode enabled")
+        print(f"Checkpoint: {args.ckpt}")
+        
+        ckpt_path = Path(args.ckpt)
+        if not ckpt_path.exists():
+            print(f"Error: Checkpoint file not found: {args.ckpt}")
+            return
+        
+        # Extract experiment name and epoch from checkpoint path
+        # Example: logs/exp_name/checkpoints/epoch=000047.ckpt
+        if "epoch=" in ckpt_path.name:
+            epoch_num = re.search(r'epoch=(\d+)', ckpt_path.name).group(1)
+        elif ckpt_path.name == "last.ckpt":
+            epoch_num = "last"
+        else:
+            epoch_num = "unknown"
+        
+        # Try to extract experiment name from path
+        if "checkpoints" in str(ckpt_path):
+            exp_name = ckpt_path.parent.parent.name
+        else:
+            exp_name = "custom_model"
+        
+        checkpoints = [(exp_name, str(ckpt_path), epoch_num)]
+        print(f"Experiment: {exp_name}")
+        print(f"Epoch: {epoch_num}")
     else:
-        print("Note: Including last.ckpt files (default)")
-    checkpoints = find_checkpoints(args.logs_dir, include_last=args.include_last)
-    
-    if not checkpoints:
-        print("No checkpoints found!")
-        return
-    
-    print(f"\nFound {len(checkpoints)} checkpoint(s):")
-    for exp_name, ckpt_path, epoch_num in checkpoints:
-        print(f"  - {exp_name}: epoch={epoch_num}")
-    
-    # Filter experiments if requested
-    if args.exp_filter:
-        checkpoints = [(e, c, ep) for e, c, ep in checkpoints 
-                      if args.exp_filter in e]
-        print(f"\nFiltered to {len(checkpoints)} checkpoint(s) matching '{args.exp_filter}'")
+        # Auto-discovery mode (original behavior)
+        print(f"Searching for checkpoints in: {args.logs_dir}")
+        if not args.include_last:
+            print("Note: Excluding last.ckpt files")
+        else:
+            print("Note: Including last.ckpt files (default)")
+        checkpoints = find_checkpoints(args.logs_dir, include_last=args.include_last)
+        
+        if not checkpoints:
+            print("No checkpoints found!")
+            return
+        
+        print(f"\nFound {len(checkpoints)} checkpoint(s):")
+        for exp_name, ckpt_path, epoch_num in checkpoints:
+            print(f"  - {exp_name}: epoch={epoch_num}")
+        
+        # Filter experiments if requested
+        if args.exp_filter:
+            checkpoints = [(e, c, ep) for e, c, ep in checkpoints 
+                          if args.exp_filter in e]
+            print(f"\nFiltered to {len(checkpoints)} checkpoint(s) matching '{args.exp_filter}'")
     
     # Process each checkpoint
     total = len(checkpoints)
@@ -461,7 +516,8 @@ def main():
         print(f"{'='*80}")
         
         # Get output directory path (don't create yet)
-        output_dir = create_output_dir(args.output_base, exp_name, epoch_num, create=False)
+        output_dir = create_output_dir(args.output_base, exp_name, epoch_num, 
+                                       sub_folder=args.sub_folder, create=False)
         print(f"Output directory: {output_dir}")
         
         # Check if output already exists
@@ -493,7 +549,8 @@ def main():
                 print(f"→ Output directory doesn't exist. Will process...")
         
         # Now create the output directory
-        output_dir = create_output_dir(args.output_base, exp_name, epoch_num, create=True)
+        output_dir = create_output_dir(args.output_base, exp_name, epoch_num, 
+                                       sub_folder=args.sub_folder, create=True)
         
         # Run inference or just calculate metrics
         if skip_inference:
@@ -519,6 +576,7 @@ def main():
                 n_samples=args.n_samples,
                 colorfix_type=args.colorfix_type,
                 use_edge_processing=args.use_edge_processing,
+                use_white_edge=args.use_white_edge,
                 calculate_metrics_flag=args.calculate_metrics,
                 dry_run=args.dry_run
             )
