@@ -87,58 +87,195 @@ inference_all_checkpoints() {
     echo "  模式 1: 推理全部 Checkpoints"
     echo "=================================================="
     echo ""
-    echo "将处理 logs 目录下的所有 checkpoint"
+    
+    # List available directories in logs
+    echo "可用的 logs 子目录："
+    echo ""
+    
+    # Get all directories in logs/
+    if [ ! -d "$LOGS_DIR" ]; then
+        echo "❌ 错误：logs 目录不存在: $LOGS_DIR"
+        read -p "按 Enter 返回菜单..."
+        return
+    fi
+    
+    # Get list of directories
+    mapfile -t LOG_DIRS < <(find "$LOGS_DIR" -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort)
+    
+    if [ ${#LOG_DIRS[@]} -eq 0 ]; then
+        echo "❌ 错误：logs 目录下没有找到子目录"
+        read -p "按 Enter 返回菜单..."
+        return
+    fi
+    
+    # Display directories with numbers
+    for i in "${!LOG_DIRS[@]}"; do
+        echo "$((i+1)). ${LOG_DIRS[$i]}"
+    done
+    echo ""
+    echo "0. 处理全部目录"
+    echo ""
+    
+    # Let user select directory
+    while true; do
+        read -p "请选择目录编号 [0-${#LOG_DIRS[@]}] (0=全部): " DIR_CHOICE
+        DIR_CHOICE=${DIR_CHOICE:-0}
+        
+        if [[ "$DIR_CHOICE" =~ ^[0-9]+$ ]] && [ "$DIR_CHOICE" -ge 0 ] && [ "$DIR_CHOICE" -le "${#LOG_DIRS[@]}" ]; then
+            break
+        else
+            echo "❌ 无效选择，请输入 0 到 ${#LOG_DIRS[@]} 之间的数字"
+        fi
+    done
+    
+    # Determine target directory
+    if [ "$DIR_CHOICE" -eq 0 ]; then
+        TARGET_LOG_DIR="$LOGS_DIR"
+        SELECTED_DIR_NAME=""
+        echo "✓ 将处理全部 logs 目录"
+    else
+        SELECTED_DIR_NAME="${LOG_DIRS[$((DIR_CHOICE-1))]}"
+        TARGET_LOG_DIR="$LOGS_DIR/$SELECTED_DIR_NAME"
+        echo "✓ 将处理目录: $SELECTED_DIR_NAME"
+    fi
+    echo ""
+    
+    # Ask for output directory name
+    read -p "请输入保存目录名 [validation_results]: " OUTPUT_BASE
+    OUTPUT_BASE=${OUTPUT_BASE:-validation_results}
+    echo "✓ 结果将保存到: $OUTPUT_BASE"
+    echo ""
+    
+    echo "将处理所有 checkpoint"
     echo "包括 edge 和 no-edge 两种模式。"
     echo ""
     
     read -p "按 Enter 继续，或按 Ctrl+C 取消..."
     
-    # First run: Edge mode
-    echo ""
-    echo "正在运行 EDGE 模式推理..."
-    echo ""
-    
-    python scripts/auto_inference.py \
-        --logs_dir "$LOGS_DIR" \
-        --output_base "validation_results" \
-        --sub_folder "edge" \
-        --init_img "$DEFAULT_INIT_IMG" \
-        --gt_img "$DEFAULT_GT_IMG" \
-        --config "$CONFIG" \
-        --vqgan_ckpt "$VQGAN_CKPT" \
-        --ddpm_steps $DDPM_STEPS \
-        --dec_w $DEC_W \
-        --seed $SEED \
-        --n_samples $N_SAMPLES \
-        --colorfix_type "$COLORFIX_TYPE" \
-        --use_edge_processing \
-        --skip_existing
-    
-    echo ""
-    echo "=================================================="
-    echo ""
-    
-    # Second run: No-edge mode (white edge maps)
-    echo ""
-    echo "正在运行 NO-EDGE 模式推理（使用白色边缘图）..."
-    echo ""
-    
-    python scripts/auto_inference.py \
-        --logs_dir "$LOGS_DIR" \
-        --output_base "validation_results" \
-        --sub_folder "no_edge" \
-        --init_img "$DEFAULT_INIT_IMG" \
-        --gt_img "$DEFAULT_GT_IMG" \
-        --config "$CONFIG" \
-        --vqgan_ckpt "$VQGAN_CKPT" \
-        --ddpm_steps $DDPM_STEPS \
-        --dec_w $DEC_W \
-        --seed $SEED \
-        --n_samples $N_SAMPLES \
-        --colorfix_type "$COLORFIX_TYPE" \
-        --use_edge_processing \
-        --use_white_edge \
-        --skip_existing
+    # Check if processing single directory or all directories
+    if [ -n "$SELECTED_DIR_NAME" ]; then
+        # Single directory mode - process each checkpoint individually
+        echo ""
+        echo "检查目录下的 checkpoints..."
+        CKPT_DIR="$TARGET_LOG_DIR/checkpoints"
+        
+        if [ ! -d "$CKPT_DIR" ]; then
+            echo "❌ 错误：checkpoints 目录不存在: $CKPT_DIR"
+            read -p "按 Enter 返回菜单..."
+            return
+        fi
+        
+        # Find all checkpoint files
+        mapfile -t CKPT_FILES < <(find "$CKPT_DIR" -name "*.ckpt" -type f | sort)
+        
+        if [ ${#CKPT_FILES[@]} -eq 0 ]; then
+            echo "❌ 错误：没有找到 checkpoint 文件"
+            read -p "按 Enter 返回菜单..."
+            return
+        fi
+        
+        echo "✓ 找到 ${#CKPT_FILES[@]} 个 checkpoint 文件"
+        echo ""
+        
+        # Process each checkpoint for edge mode
+        echo "正在运行 EDGE 模式推理..."
+        echo ""
+        
+        for CKPT_FILE in "${CKPT_FILES[@]}"; do
+            python scripts/auto_inference.py \
+                --ckpt "$CKPT_FILE" \
+                --logs_dir "$LOGS_DIR" \
+                --output_base "$OUTPUT_BASE" \
+                --sub_folder "edge" \
+                --init_img "$DEFAULT_INIT_IMG" \
+                --gt_img "$DEFAULT_GT_IMG" \
+                --config "$CONFIG" \
+                --vqgan_ckpt "$VQGAN_CKPT" \
+                --ddpm_steps $DDPM_STEPS \
+                --dec_w $DEC_W \
+                --seed $SEED \
+                --n_samples $N_SAMPLES \
+                --colorfix_type "$COLORFIX_TYPE" \
+                --use_edge_processing \
+                --skip_existing
+        done
+        
+        echo ""
+        echo "=================================================="
+        echo ""
+        
+        # Process each checkpoint for no-edge mode
+        echo "正在运行 NO-EDGE 模式推理（使用白色边缘图）..."
+        echo ""
+        
+        for CKPT_FILE in "${CKPT_FILES[@]}"; do
+            python scripts/auto_inference.py \
+                --ckpt "$CKPT_FILE" \
+                --logs_dir "$LOGS_DIR" \
+                --output_base "$OUTPUT_BASE" \
+                --sub_folder "no_edge" \
+                --init_img "$DEFAULT_INIT_IMG" \
+                --gt_img "$DEFAULT_GT_IMG" \
+                --config "$CONFIG" \
+                --vqgan_ckpt "$VQGAN_CKPT" \
+                --ddpm_steps $DDPM_STEPS \
+                --dec_w $DEC_W \
+                --seed $SEED \
+                --n_samples $N_SAMPLES \
+                --colorfix_type "$COLORFIX_TYPE" \
+                --use_edge_processing \
+                --use_white_edge \
+                --skip_existing
+        done
+    else
+        # All directories mode - let auto_inference.py handle discovery
+        # First run: Edge mode
+        echo ""
+        echo "正在运行 EDGE 模式推理..."
+        echo ""
+        
+        python scripts/auto_inference.py \
+            --logs_dir "$TARGET_LOG_DIR" \
+            --output_base "$OUTPUT_BASE" \
+            --sub_folder "edge" \
+            --init_img "$DEFAULT_INIT_IMG" \
+            --gt_img "$DEFAULT_GT_IMG" \
+            --config "$CONFIG" \
+            --vqgan_ckpt "$VQGAN_CKPT" \
+            --ddpm_steps $DDPM_STEPS \
+            --dec_w $DEC_W \
+            --seed $SEED \
+            --n_samples $N_SAMPLES \
+            --colorfix_type "$COLORFIX_TYPE" \
+            --use_edge_processing \
+            --skip_existing
+        
+        echo ""
+        echo "=================================================="
+        echo ""
+        
+        # Second run: No-edge mode (white edge maps)
+        echo ""
+        echo "正在运行 NO-EDGE 模式推理（使用白色边缘图）..."
+        echo ""
+        
+        python scripts/auto_inference.py \
+            --logs_dir "$TARGET_LOG_DIR" \
+            --output_base "$OUTPUT_BASE" \
+            --sub_folder "no_edge" \
+            --init_img "$DEFAULT_INIT_IMG" \
+            --gt_img "$DEFAULT_GT_IMG" \
+            --config "$CONFIG" \
+            --vqgan_ckpt "$VQGAN_CKPT" \
+            --ddpm_steps $DDPM_STEPS \
+            --dec_w $DEC_W \
+            --seed $SEED \
+            --n_samples $N_SAMPLES \
+            --colorfix_type "$COLORFIX_TYPE" \
+            --use_edge_processing \
+            --use_white_edge \
+            --skip_existing
+    fi
     
     echo ""
     echo "===================================================="
@@ -156,8 +293,8 @@ inference_all_checkpoints() {
         echo "提示：这可能需要一些时间..."
         echo ""
         
-        # Find all edge and no_edge subdirectories in validation_results
-        find validation_results -type d \( -name "edge" -o -name "no_edge" \) | while read -r result_dir; do
+        # Find all edge and no_edge subdirectories in the output base
+        find "$OUTPUT_BASE" -type d \( -name "edge" -o -name "no_edge" \) 2>/dev/null | while read -r result_dir; do
             echo "计算指标: $result_dir"
             python scripts/calculate_metrics_standalone.py \
                 --output_dir "$result_dir" \
