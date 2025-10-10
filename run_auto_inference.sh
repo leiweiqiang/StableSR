@@ -59,6 +59,8 @@ show_menu() {
     echo ""
     echo "3. 推理指定 checkpoint 文件 (no-edge)"
     echo ""
+    echo "4. 生成推理结果报告 (CSV格式)"
+    echo ""
     echo "0. 退出"
     echo ""
     echo "===================================================="
@@ -283,30 +285,9 @@ inference_all_checkpoints() {
     echo "===================================================="
     echo ""
     
-    # Ask if user wants to calculate metrics for all results
-    read -p "是否为所有结果计算指标? (y/n) [y]: " CALC_ALL_METRICS
-    CALC_ALL_METRICS=${CALC_ALL_METRICS:-y}
-    
-    if [ "$CALC_ALL_METRICS" = "y" ] || [ "$CALC_ALL_METRICS" = "Y" ]; then
-        echo ""
-        echo "正在为所有结果计算指标..."
-        echo "提示：这可能需要一些时间..."
-        echo ""
-        
-        # Find all edge and no_edge subdirectories in the output base
-        find "$OUTPUT_BASE" -type d \( -name "edge" -o -name "no_edge" \) 2>/dev/null | while read -r result_dir; do
-            echo "计算指标: $result_dir"
-            python scripts/calculate_metrics_standalone.py \
-                --output_dir "$result_dir" \
-                --gt_dir "$DEFAULT_GT_IMG" \
-                --crop_border 0 2>&1 | grep -E "(平均|Average|PSNR|SSIM|LPIPS|✓)"
-            echo ""
-        done
-        
-        echo "✓ 全部指标计算完成"
-        echo "结果保存在各子目录的 metrics.json 文件中"
-        echo ""
-    fi
+    echo "✓ 所有推理结果已生成，指标已自动计算"
+    echo "结果保存在各子目录的 metrics.json 文件中"
+    echo ""
     
     read -p "按 Enter 返回菜单..."
 }
@@ -718,6 +699,71 @@ inference_specific_no_edge() {
     read -p "按 Enter 返回菜单..."
 }
 
+# Function for mode 4: Generate report
+generate_report() {
+    echo ""
+    echo "=================================================="
+    echo "  模式 4: 生成推理结果报告 (CSV格式)"
+    echo "=================================================="
+    echo ""
+    
+    # Get inference results path
+    while true; do
+        read -p "请输入推理结果目录路径: " RESULTS_PATH
+        
+        if [ -z "$RESULTS_PATH" ]; then
+            echo "❌ 错误：路径不能为空"
+            continue
+        fi
+        
+        if [ ! -d "$RESULTS_PATH" ]; then
+            echo "❌ 错误：目录不存在: $RESULTS_PATH"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ 目录存在: $RESULTS_PATH"
+            break
+        fi
+    done
+    
+    echo ""
+    echo "正在扫描推理结果目录..."
+    echo ""
+    
+    # Check if Python script exists
+    PYTHON_SCRIPT="scripts/generate_metrics_report.py"
+    if [ ! -f "$PYTHON_SCRIPT" ]; then
+        echo "❌ 错误：找不到报告生成脚本: $PYTHON_SCRIPT"
+        read -p "按 Enter 返回菜单..."
+        return
+    fi
+    
+    # Generate the report using Python script
+    echo "正在生成报告..."
+    python3 "$PYTHON_SCRIPT" "$RESULTS_PATH"
+    
+    # Get the new filename format
+    DIR_NAME=$(basename "$RESULTS_PATH")
+    OUTPUT_REPORT="$RESULTS_PATH/${DIR_NAME}_inference_report.csv"
+    
+    echo ""
+    echo "=================================================="
+    echo "  报告生成完成！"
+    echo "=================================================="
+    echo ""
+    echo "✓ 报告已保存到: $OUTPUT_REPORT"
+    echo ""
+    echo "报告格式说明："
+    echo "- 包含 PSNR、SSIM、LPIPS 三种指标"
+    echo "- 每种指标包含平均值和10个图片的单独数值"
+    echo "- 列包含 StableSR、edge loss 和 Epoch 结果"
+    echo ""
+    
+    read -p "按 Enter 返回菜单..."
+}
+
 # Main program
 main() {
     # Load saved defaults
@@ -726,7 +772,7 @@ main() {
     # Main menu loop
     while true; do
         show_menu
-        read -p "请选择 [0-3]: " choice
+        read -p "请选择 [0-4]: " choice
         
         case $choice in
             1)
@@ -738,6 +784,9 @@ main() {
             3)
                 inference_specific_no_edge
                 ;;
+            4)
+                generate_report
+                ;;
             0)
                 echo ""
                 echo "退出中..."
@@ -745,7 +794,7 @@ main() {
                 ;;
             *)
                 echo ""
-                echo "无效选项，请选择 0-3。"
+                echo "无效选项，请选择 0-4。"
                 sleep 2
                 ;;
         esac
