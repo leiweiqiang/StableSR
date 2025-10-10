@@ -16,6 +16,8 @@ load_defaults() {
         DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
         DEFAULT_GT_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
         DEFAULT_MAX_IMAGES="-1"
+        DEFAULT_CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_loss.yaml"
+        DEFAULT_VQGAN_CKPT="/root/checkpoints/vqgan_cfw_00011.ckpt"
     fi
 }
 
@@ -28,6 +30,8 @@ DEFAULT_OUTPUT_BASE="$DEFAULT_OUTPUT_BASE"
 DEFAULT_INIT_IMG="$DEFAULT_INIT_IMG"
 DEFAULT_GT_IMG="$DEFAULT_GT_IMG"
 DEFAULT_MAX_IMAGES="$DEFAULT_MAX_IMAGES"
+DEFAULT_CONFIG="$DEFAULT_CONFIG"
+DEFAULT_VQGAN_CKPT="$DEFAULT_VQGAN_CKPT"
 EOF
     echo "✓ 默认参数已保存"
 }
@@ -233,6 +237,38 @@ inference_specific_edge() {
         fi
     done
     
+    # Get config file path
+    while true; do
+        CONFIG_PATH=$(read_with_default "Config 文件路径" "$DEFAULT_CONFIG")
+        
+        if [ ! -f "$CONFIG_PATH" ]; then
+            echo "❌ 错误：Config 文件不存在: $CONFIG_PATH"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ Config 文件存在"
+            break
+        fi
+    done
+    
+    # Get VQGAN checkpoint path
+    while true; do
+        VQGAN_PATH=$(read_with_default "VQGAN Checkpoint 路径" "$DEFAULT_VQGAN_CKPT")
+        
+        if [ ! -f "$VQGAN_PATH" ]; then
+            echo "❌ 错误：VQGAN Checkpoint 文件不存在: $VQGAN_PATH"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ VQGAN Checkpoint 文件存在"
+            break
+        fi
+    done
+    
     # Ask if user wants to process specific file
     echo ""
     read -p "是否只推理指定文件? (y/n) [n]: " USE_SPECIFIC_FILE
@@ -276,6 +312,8 @@ inference_specific_edge() {
     DEFAULT_INIT_IMG="$INIT_IMG"
     DEFAULT_GT_IMG="$GT_IMG"
     DEFAULT_MAX_IMAGES="$MAX_IMAGES"
+    DEFAULT_CONFIG="$CONFIG_PATH"
+    DEFAULT_VQGAN_CKPT="$VQGAN_PATH"
     save_defaults
     
     echo ""
@@ -289,7 +327,7 @@ inference_specific_edge() {
     
     # Build command
     CMD="python scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py \
-        --config \"$CONFIG\" \
+        --config \"$CONFIG_PATH\" \
         --ckpt \"$CKPT\" \
         --init-img \"$INIT_IMG\" \
         --gt-img \"$GT_IMG\" \
@@ -298,7 +336,7 @@ inference_specific_edge() {
         --dec_w $DEC_W \
         --seed $SEED \
         --n_samples $N_SAMPLES \
-        --vqgan_ckpt \"$VQGAN_CKPT\" \
+        --vqgan_ckpt \"$VQGAN_PATH\" \
         --colorfix_type \"$COLORFIX_TYPE\" \
         --max_images $MAX_IMAGES \
         --use_edge_processing"
@@ -401,6 +439,38 @@ inference_specific_no_edge() {
         fi
     done
     
+    # Get config file path
+    while true; do
+        CONFIG_PATH=$(read_with_default "Config 文件路径" "$DEFAULT_CONFIG")
+        
+        if [ ! -f "$CONFIG_PATH" ]; then
+            echo "❌ 错误：Config 文件不存在: $CONFIG_PATH"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ Config 文件存在"
+            break
+        fi
+    done
+    
+    # Get VQGAN checkpoint path
+    while true; do
+        VQGAN_PATH=$(read_with_default "VQGAN Checkpoint 路径" "$DEFAULT_VQGAN_CKPT")
+        
+        if [ ! -f "$VQGAN_PATH" ]; then
+            echo "❌ 错误：VQGAN Checkpoint 文件不存在: $VQGAN_PATH"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ VQGAN Checkpoint 文件存在"
+            break
+        fi
+    done
+    
     # Ask if user wants to process specific file
     echo ""
     read -p "是否只推理指定文件? (y/n) [n]: " USE_SPECIFIC_FILE
@@ -444,6 +514,8 @@ inference_specific_no_edge() {
     DEFAULT_INIT_IMG="$INIT_IMG"
     DEFAULT_GT_IMG="$GT_IMG"
     DEFAULT_MAX_IMAGES="$MAX_IMAGES"
+    DEFAULT_CONFIG="$CONFIG_PATH"
+    DEFAULT_VQGAN_CKPT="$VQGAN_PATH"
     save_defaults
     
     echo ""
@@ -459,7 +531,7 @@ inference_specific_no_edge() {
     # For no-edge mode, we use --use_edge_processing with --use_white_edge
     # This passes white (all ones) edge maps to the model
     CMD="python scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py \
-        --config \"$CONFIG\" \
+        --config \"$CONFIG_PATH\" \
         --ckpt \"$CKPT\" \
         --init-img \"$INIT_IMG\" \
         --gt-img \"$GT_IMG\" \
@@ -468,7 +540,7 @@ inference_specific_no_edge() {
         --dec_w $DEC_W \
         --seed $SEED \
         --n_samples $N_SAMPLES \
-        --vqgan_ckpt \"$VQGAN_CKPT\" \
+        --vqgan_ckpt \"$VQGAN_PATH\" \
         --colorfix_type \"$COLORFIX_TYPE\" \
         --max_images $MAX_IMAGES \
         --use_edge_processing \
