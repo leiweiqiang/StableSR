@@ -12,6 +12,7 @@ load_defaults() {
     else
         # Initial default parameters
         DEFAULT_CKPT=""
+        DEFAULT_LOGS_DIR="logs"
         DEFAULT_OUTPUT_BASE="validation_results"
         DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
         DEFAULT_GT_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
@@ -26,6 +27,7 @@ save_defaults() {
     cat > "$CONFIG_FILE" << EOF
 # 保存的推理默认参数
 DEFAULT_CKPT="$DEFAULT_CKPT"
+DEFAULT_LOGS_DIR="$DEFAULT_LOGS_DIR"
 DEFAULT_OUTPUT_BASE="$DEFAULT_OUTPUT_BASE"
 DEFAULT_INIT_IMG="$DEFAULT_INIT_IMG"
 DEFAULT_GT_IMG="$DEFAULT_GT_IMG"
@@ -92,8 +94,7 @@ inference_all_checkpoints() {
     
     # Ask user for logs directory
     while true; do
-        read -p "请输入 logs 目录路径 [$LOGS_DIR]: " USER_LOGS_DIR
-        USER_LOGS_DIR=${USER_LOGS_DIR:-$LOGS_DIR}
+        USER_LOGS_DIR=$(read_with_default "请输入 logs 目录路径" "$DEFAULT_LOGS_DIR")
         
         if [ ! -d "$USER_LOGS_DIR" ]; then
             echo "❌ 错误：目录不存在: $USER_LOGS_DIR"
@@ -103,6 +104,8 @@ inference_all_checkpoints() {
             fi
         else
             echo "✓ 目录存在: $USER_LOGS_DIR"
+            # Save this as the new default
+            DEFAULT_LOGS_DIR="$USER_LOGS_DIR"
             break
         fi
     done
@@ -161,10 +164,13 @@ inference_all_checkpoints() {
     echo ""
     
     # Ask for output directory name
-    read -p "请输入保存目录名 [validation_results]: " OUTPUT_BASE
-    OUTPUT_BASE=${OUTPUT_BASE:-validation_results}
+    OUTPUT_BASE=$(read_with_default "请输入保存目录名" "$DEFAULT_OUTPUT_BASE")
     echo "✓ 结果将保存到: $OUTPUT_BASE"
     echo ""
+    
+    # Save updated defaults
+    DEFAULT_OUTPUT_BASE="$OUTPUT_BASE"
+    save_defaults
     
     echo "将处理所有 checkpoint"
     echo "包括 edge 和 no-edge 两种模式。"
@@ -185,23 +191,48 @@ inference_all_checkpoints() {
             return
         fi
         
-        # Find all checkpoint files
-        mapfile -t CKPT_FILES < <(find "$CKPT_DIR" -name "*.ckpt" -type f | sort)
+        # Find all checkpoint files (excluding last.ckpt)
+        mapfile -t CKPT_FILES < <(find "$CKPT_DIR" -name "*.ckpt" -type f ! -name "last.ckpt" | sort)
         
         if [ ${#CKPT_FILES[@]} -eq 0 ]; then
-            echo "❌ 错误：没有找到 checkpoint 文件"
+            echo "❌ 错误：没有找到 checkpoint 文件（已排除 last.ckpt）"
             read -p "按 Enter 返回菜单..."
             return
         fi
         
-        echo "✓ 找到 ${#CKPT_FILES[@]} 个 checkpoint 文件"
+        echo "✓ 找到 ${#CKPT_FILES[@]} 个 checkpoint 文件（已排除 last.ckpt）"
         echo ""
         
         # Process each checkpoint for edge mode
         echo "正在运行 EDGE 模式推理..."
         echo ""
         
+        EDGE_PROCESSED=0
+        EDGE_SKIPPED=0
+        
         for CKPT_FILE in "${CKPT_FILES[@]}"; do
+            # Extract epoch number from checkpoint filename
+            CKPT_BASENAME=$(basename "$CKPT_FILE")
+            if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+                EPOCH_NUM="${BASH_REMATCH[1]}"
+            else
+                echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
+                continue
+            fi
+            
+            # Check if output directory already has images
+            OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/edge/epochs_$((10#$EPOCH_NUM))"
+            if [ -d "$OUTPUT_CHECK" ]; then
+                # Count PNG files in output directory
+                PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+                if [ "$PNG_COUNT" -gt 0 ]; then
+                    echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
+                    ((EDGE_SKIPPED++))
+                    continue
+                fi
+            fi
+            
+            echo "→ 处理 epoch=$EPOCH_NUM"
             python scripts/auto_inference.py \
                 --ckpt "$CKPT_FILE" \
                 --logs_dir "$USER_LOGS_DIR" \
@@ -218,7 +249,14 @@ inference_all_checkpoints() {
                 --colorfix_type "$COLORFIX_TYPE" \
                 --use_edge_processing \
                 --skip_existing
+            
+            if [ $? -eq 0 ]; then
+                ((EDGE_PROCESSED++))
+            fi
         done
+        
+        echo ""
+        echo "EDGE 模式统计: 已处理 $EDGE_PROCESSED 个，跳过 $EDGE_SKIPPED 个"
         
         echo ""
         echo "=================================================="
@@ -228,7 +266,32 @@ inference_all_checkpoints() {
         echo "正在运行 NO-EDGE 模式推理（使用白色边缘图）..."
         echo ""
         
+        NO_EDGE_PROCESSED=0
+        NO_EDGE_SKIPPED=0
+        
         for CKPT_FILE in "${CKPT_FILES[@]}"; do
+            # Extract epoch number from checkpoint filename
+            CKPT_BASENAME=$(basename "$CKPT_FILE")
+            if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+                EPOCH_NUM="${BASH_REMATCH[1]}"
+            else
+                echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
+                continue
+            fi
+            
+            # Check if output directory already has images
+            OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/no_edge/epochs_$((10#$EPOCH_NUM))"
+            if [ -d "$OUTPUT_CHECK" ]; then
+                # Count PNG files in output directory
+                PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+                if [ "$PNG_COUNT" -gt 0 ]; then
+                    echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
+                    ((NO_EDGE_SKIPPED++))
+                    continue
+                fi
+            fi
+            
+            echo "→ 处理 epoch=$EPOCH_NUM"
             python scripts/auto_inference.py \
                 --ckpt "$CKPT_FILE" \
                 --logs_dir "$USER_LOGS_DIR" \
@@ -246,7 +309,14 @@ inference_all_checkpoints() {
                 --use_edge_processing \
                 --use_white_edge \
                 --skip_existing
+            
+            if [ $? -eq 0 ]; then
+                ((NO_EDGE_PROCESSED++))
+            fi
         done
+        
+        echo ""
+        echo "NO-EDGE 模式统计: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
     else
         # All directories mode - let auto_inference.py handle discovery
         # First run: Edge mode
@@ -303,9 +373,69 @@ inference_all_checkpoints() {
     echo "===================================================="
     echo ""
     
+    # Show statistics if in single directory mode
+    if [ -n "$SELECTED_DIR_NAME" ]; then
+        echo "统计信息："
+        echo "  EDGE 模式: 已处理 $EDGE_PROCESSED 个，跳过 $EDGE_SKIPPED 个"
+        echo "  NO-EDGE 模式: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
+        echo "  总计: 已处理 $((EDGE_PROCESSED + NO_EDGE_PROCESSED)) 个，跳过 $((EDGE_SKIPPED + NO_EDGE_SKIPPED)) 个"
+        echo ""
+    fi
+    
     echo "✓ 所有推理结果已生成，指标已自动计算"
     echo "结果保存在各子目录的 metrics.json 文件中"
     echo ""
+    
+    # Generate summary report using the Python script from menu 4
+    echo "正在生成推理结果报告..."
+    echo ""
+    
+    # Determine the results path
+    if [ -n "$SELECTED_DIR_NAME" ]; then
+        RESULTS_PATH="$OUTPUT_BASE/$SELECTED_DIR_NAME"
+    else
+        RESULTS_PATH="$OUTPUT_BASE"
+    fi
+    
+    # Check if Python script exists
+    PYTHON_SCRIPT="scripts/generate_metrics_report.py"
+    if [ -f "$PYTHON_SCRIPT" ]; then
+        echo "正在扫描推理结果目录: $RESULTS_PATH"
+        python3 "$PYTHON_SCRIPT" "$RESULTS_PATH"
+        
+        # Display report location
+        DIR_NAME=$(basename "$RESULTS_PATH")
+        OUTPUT_REPORT="$RESULTS_PATH/${DIR_NAME}_inference_report.csv"
+        
+        if [ -f "$OUTPUT_REPORT" ]; then
+            # Add footer with timestamp (3 lines)
+            echo "" >> "$OUTPUT_REPORT"
+            echo "" >> "$OUTPUT_REPORT"
+            echo "$(date '+%a %b %d')" >> "$OUTPUT_REPORT"
+            echo "$(date '+%T')" >> "$OUTPUT_REPORT"
+            echo "$(date '+%Z %Y')" >> "$OUTPUT_REPORT"
+            
+            echo ""
+            echo "===================================================="
+            echo "✓ 推理结果报告已生成"
+            echo "  报告位置: $OUTPUT_REPORT"
+            echo "===================================================="
+            echo ""
+            
+            # Show preview of the report
+            echo "报告预览（前10行）："
+            head -11 "$OUTPUT_REPORT" | column -t -s ','
+            echo ""
+            
+            echo "报告尾部信息："
+            tail -5 "$OUTPUT_REPORT"
+            echo ""
+        fi
+    else
+        echo "⚠ 找不到报告生成脚本: $PYTHON_SCRIPT"
+        echo "跳过报告生成"
+        echo ""
+    fi
     
     read -p "按 Enter 返回菜单..."
 }
@@ -766,6 +896,15 @@ generate_report() {
     DIR_NAME=$(basename "$RESULTS_PATH")
     OUTPUT_REPORT="$RESULTS_PATH/${DIR_NAME}_inference_report.csv"
     
+    # Add footer with timestamp (3 lines) if report exists
+    if [ -f "$OUTPUT_REPORT" ]; then
+        echo "" >> "$OUTPUT_REPORT"
+        echo "" >> "$OUTPUT_REPORT"
+        echo "$(date '+%a %b %d')" >> "$OUTPUT_REPORT"
+        echo "$(date '+%T')" >> "$OUTPUT_REPORT"
+        echo "$(date '+%Z %Y')" >> "$OUTPUT_REPORT"
+    fi
+    
     echo ""
     echo "=================================================="
     echo "  报告生成完成！"
@@ -777,7 +916,15 @@ generate_report() {
     echo "- 包含 PSNR、SSIM、LPIPS 三种指标"
     echo "- 每种指标包含平均值和10个图片的单独数值"
     echo "- 列包含 StableSR、edge loss 和 Epoch 结果"
+    echo "- 报告尾部包含生成时间（三行格式）"
     echo ""
+    
+    # Show footer preview
+    if [ -f "$OUTPUT_REPORT" ]; then
+        echo "报告尾部信息："
+        tail -5 "$OUTPUT_REPORT"
+        echo ""
+    fi
     
     read -p "按 Enter 返回菜单..."
 }
