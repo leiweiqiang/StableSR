@@ -133,3 +133,6 @@ venv.bak/
 .mypy_cache/
 
 outputs/
+
+double-check/
+validation_results/
