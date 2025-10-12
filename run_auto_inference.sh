@@ -14,7 +14,8 @@ load_defaults() {
         DEFAULT_CKPT=""
         DEFAULT_LOGS_DIR="logs"
         DEFAULT_OUTPUT_BASE="validation_results"
-        DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
+        # DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
+        DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
         DEFAULT_GT_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
         DEFAULT_MAX_IMAGES="-1"
         DEFAULT_CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_loss.yaml"
@@ -42,7 +43,7 @@ EOF
 LOGS_DIR="logs"
 CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_loss.yaml"
 VQGAN_CKPT="/root/checkpoints/vqgan_cfw_00011.ckpt"
-DDPM_STEPS=200
+DDPM_STEPS=1000
 DEC_W=0.5
 SEED=42
 N_SAMPLES=1
@@ -122,8 +123,8 @@ inference_all_checkpoints() {
         return
     fi
     
-    # Get list of directories
-    mapfile -t LOG_DIRS < <(find "$USER_LOGS_DIR" -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort)
+    # Get list of directories (excluding child_runs)
+    mapfile -t LOG_DIRS < <(find "$USER_LOGS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name "child_runs" -printf "%f\n" | sort)
     
     if [ ${#LOG_DIRS[@]} -eq 0 ]; then
         echo "❌ 错误：目录下没有找到子目录"
@@ -136,31 +137,22 @@ inference_all_checkpoints() {
         echo "$((i+1)). ${LOG_DIRS[$i]}"
     done
     echo ""
-    echo "0. 处理全部目录"
-    echo ""
     
     # Let user select directory
     while true; do
-        read -p "请选择目录编号 [0-${#LOG_DIRS[@]}] (0=全部): " DIR_CHOICE
-        DIR_CHOICE=${DIR_CHOICE:-0}
+        read -p "请选择目录编号 [1-${#LOG_DIRS[@]}]: " DIR_CHOICE
         
-        if [[ "$DIR_CHOICE" =~ ^[0-9]+$ ]] && [ "$DIR_CHOICE" -ge 0 ] && [ "$DIR_CHOICE" -le "${#LOG_DIRS[@]}" ]; then
+        if [[ "$DIR_CHOICE" =~ ^[0-9]+$ ]] && [ "$DIR_CHOICE" -ge 1 ] && [ "$DIR_CHOICE" -le "${#LOG_DIRS[@]}" ]; then
             break
         else
-            echo "❌ 无效选择，请输入 0 到 ${#LOG_DIRS[@]} 之间的数字"
+            echo "❌ 无效选择，请输入 1 到 ${#LOG_DIRS[@]} 之间的数字"
         fi
     done
     
     # Determine target directory
-    if [ "$DIR_CHOICE" -eq 0 ]; then
-        TARGET_LOG_DIR="$USER_LOGS_DIR"
-        SELECTED_DIR_NAME=""
-        echo "✓ 将处理全部目录"
-    else
-        SELECTED_DIR_NAME="${LOG_DIRS[$((DIR_CHOICE-1))]}"
-        TARGET_LOG_DIR="$USER_LOGS_DIR/$SELECTED_DIR_NAME"
-        echo "✓ 将处理目录: $SELECTED_DIR_NAME"
-    fi
+    SELECTED_DIR_NAME="${LOG_DIRS[$((DIR_CHOICE-1))]}"
+    TARGET_LOG_DIR="$USER_LOGS_DIR/$SELECTED_DIR_NAME"
+    echo "✓ 将处理目录: $SELECTED_DIR_NAME"
     echo ""
     
     # Ask for output directory name
@@ -178,154 +170,62 @@ inference_all_checkpoints() {
     
     read -p "按 Enter 继续，或按 Ctrl+C 取消..."
     
-    # Check if processing single directory or all directories
-    if [ -n "$SELECTED_DIR_NAME" ]; then
-        # Single directory mode - process each checkpoint individually
-        echo ""
-        echo "检查目录下的 checkpoints..."
-        CKPT_DIR="$TARGET_LOG_DIR/checkpoints"
-        
-        if [ ! -d "$CKPT_DIR" ]; then
-            echo "❌ 错误：checkpoints 目录不存在: $CKPT_DIR"
-            read -p "按 Enter 返回菜单..."
-            return
+    # Process checkpoints in selected directory
+    echo ""
+    echo "检查目录下的 checkpoints..."
+    CKPT_DIR="$TARGET_LOG_DIR/checkpoints"
+    
+    if [ ! -d "$CKPT_DIR" ]; then
+        echo "❌ 错误：checkpoints 目录不存在: $CKPT_DIR"
+        read -p "按 Enter 返回菜单..."
+        return
+    fi
+    
+    # Find all checkpoint files (excluding last.ckpt)
+    mapfile -t CKPT_FILES < <(find "$CKPT_DIR" -name "*.ckpt" -type f ! -name "last.ckpt" | sort)
+    
+    if [ ${#CKPT_FILES[@]} -eq 0 ]; then
+        echo "❌ 错误：没有找到 checkpoint 文件（已排除 last.ckpt）"
+        read -p "按 Enter 返回菜单..."
+        return
+    fi
+    
+    echo "✓ 找到 ${#CKPT_FILES[@]} 个 checkpoint 文件（已排除 last.ckpt）"
+    echo ""
+    
+    # Process each checkpoint for edge mode
+    echo "正在运行 EDGE 模式推理..."
+    echo ""
+    
+    EDGE_PROCESSED=0
+    EDGE_SKIPPED=0
+    
+    for CKPT_FILE in "${CKPT_FILES[@]}"; do
+        # Extract epoch number from checkpoint filename
+        CKPT_BASENAME=$(basename "$CKPT_FILE")
+        if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+            EPOCH_NUM="${BASH_REMATCH[1]}"
+        else
+            echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
+            continue
         fi
         
-        # Find all checkpoint files (excluding last.ckpt)
-        mapfile -t CKPT_FILES < <(find "$CKPT_DIR" -name "*.ckpt" -type f ! -name "last.ckpt" | sort)
-        
-        if [ ${#CKPT_FILES[@]} -eq 0 ]; then
-            echo "❌ 错误：没有找到 checkpoint 文件（已排除 last.ckpt）"
-            read -p "按 Enter 返回菜单..."
-            return
+        # Check if output directory already has images
+        OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/edge/epochs_$((10#$EPOCH_NUM))"
+        if [ -d "$OUTPUT_CHECK" ]; then
+            # Count PNG files in output directory
+            PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+            if [ "$PNG_COUNT" -gt 0 ]; then
+                echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
+                ((EDGE_SKIPPED++))
+                continue
+            fi
         fi
         
-        echo "✓ 找到 ${#CKPT_FILES[@]} 个 checkpoint 文件（已排除 last.ckpt）"
-        echo ""
-        
-        # Process each checkpoint for edge mode
-        echo "正在运行 EDGE 模式推理..."
-        echo ""
-        
-        EDGE_PROCESSED=0
-        EDGE_SKIPPED=0
-        
-        for CKPT_FILE in "${CKPT_FILES[@]}"; do
-            # Extract epoch number from checkpoint filename
-            CKPT_BASENAME=$(basename "$CKPT_FILE")
-            if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
-                EPOCH_NUM="${BASH_REMATCH[1]}"
-            else
-                echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
-                continue
-            fi
-            
-            # Check if output directory already has images
-            OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/edge/epochs_$((10#$EPOCH_NUM))"
-            if [ -d "$OUTPUT_CHECK" ]; then
-                # Count PNG files in output directory
-                PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
-                if [ "$PNG_COUNT" -gt 0 ]; then
-                    echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
-                    ((EDGE_SKIPPED++))
-                    continue
-                fi
-            fi
-            
-            echo "→ 处理 epoch=$EPOCH_NUM"
-            python scripts/auto_inference.py \
-                --ckpt "$CKPT_FILE" \
-                --logs_dir "$USER_LOGS_DIR" \
-                --output_base "$OUTPUT_BASE" \
-                --sub_folder "edge" \
-                --init_img "$DEFAULT_INIT_IMG" \
-                --gt_img "$DEFAULT_GT_IMG" \
-                --config "$CONFIG" \
-                --vqgan_ckpt "$VQGAN_CKPT" \
-                --ddpm_steps $DDPM_STEPS \
-                --dec_w $DEC_W \
-                --seed $SEED \
-                --n_samples $N_SAMPLES \
-                --colorfix_type "$COLORFIX_TYPE" \
-                --use_edge_processing \
-                --skip_existing
-            
-            if [ $? -eq 0 ]; then
-                ((EDGE_PROCESSED++))
-            fi
-        done
-        
-        echo ""
-        echo "EDGE 模式统计: 已处理 $EDGE_PROCESSED 个，跳过 $EDGE_SKIPPED 个"
-        
-        echo ""
-        echo "=================================================="
-        echo ""
-        
-        # Process each checkpoint for no-edge mode
-        echo "正在运行 NO-EDGE 模式推理（使用白色边缘图）..."
-        echo ""
-        
-        NO_EDGE_PROCESSED=0
-        NO_EDGE_SKIPPED=0
-        
-        for CKPT_FILE in "${CKPT_FILES[@]}"; do
-            # Extract epoch number from checkpoint filename
-            CKPT_BASENAME=$(basename "$CKPT_FILE")
-            if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
-                EPOCH_NUM="${BASH_REMATCH[1]}"
-            else
-                echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
-                continue
-            fi
-            
-            # Check if output directory already has images
-            OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/no_edge/epochs_$((10#$EPOCH_NUM))"
-            if [ -d "$OUTPUT_CHECK" ]; then
-                # Count PNG files in output directory
-                PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
-                if [ "$PNG_COUNT" -gt 0 ]; then
-                    echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
-                    ((NO_EDGE_SKIPPED++))
-                    continue
-                fi
-            fi
-            
-            echo "→ 处理 epoch=$EPOCH_NUM"
-            python scripts/auto_inference.py \
-                --ckpt "$CKPT_FILE" \
-                --logs_dir "$USER_LOGS_DIR" \
-                --output_base "$OUTPUT_BASE" \
-                --sub_folder "no_edge" \
-                --init_img "$DEFAULT_INIT_IMG" \
-                --gt_img "$DEFAULT_GT_IMG" \
-                --config "$CONFIG" \
-                --vqgan_ckpt "$VQGAN_CKPT" \
-                --ddpm_steps $DDPM_STEPS \
-                --dec_w $DEC_W \
-                --seed $SEED \
-                --n_samples $N_SAMPLES \
-                --colorfix_type "$COLORFIX_TYPE" \
-                --use_edge_processing \
-                --use_white_edge \
-                --skip_existing
-            
-            if [ $? -eq 0 ]; then
-                ((NO_EDGE_PROCESSED++))
-            fi
-        done
-        
-        echo ""
-        echo "NO-EDGE 模式统计: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
-    else
-        # All directories mode - let auto_inference.py handle discovery
-        # First run: Edge mode
-        echo ""
-        echo "正在运行 EDGE 模式推理..."
-        echo ""
-        
+        echo "→ 处理 epoch=$EPOCH_NUM"
         python scripts/auto_inference.py \
-            --logs_dir "$TARGET_LOG_DIR" \
+            --ckpt "$CKPT_FILE" \
+            --logs_dir "$USER_LOGS_DIR" \
             --output_base "$OUTPUT_BASE" \
             --sub_folder "edge" \
             --init_img "$DEFAULT_INIT_IMG" \
@@ -340,17 +240,51 @@ inference_all_checkpoints() {
             --use_edge_processing \
             --skip_existing
         
-        echo ""
-        echo "=================================================="
-        echo ""
+        if [ $? -eq 0 ]; then
+            ((EDGE_PROCESSED++))
+        fi
+    done
+    
+    echo ""
+    echo "EDGE 模式统计: 已处理 $EDGE_PROCESSED 个，跳过 $EDGE_SKIPPED 个"
+    
+    echo ""
+    echo "=================================================="
+    echo ""
+    
+    # Process each checkpoint for no-edge mode
+    echo "正在运行 NO-EDGE 模式推理（使用白色边缘图）..."
+    echo ""
+    
+    NO_EDGE_PROCESSED=0
+    NO_EDGE_SKIPPED=0
+    
+    for CKPT_FILE in "${CKPT_FILES[@]}"; do
+        # Extract epoch number from checkpoint filename
+        CKPT_BASENAME=$(basename "$CKPT_FILE")
+        if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+            EPOCH_NUM="${BASH_REMATCH[1]}"
+        else
+            echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
+            continue
+        fi
         
-        # Second run: No-edge mode (white edge maps)
-        echo ""
-        echo "正在运行 NO-EDGE 模式推理（使用白色边缘图）..."
-        echo ""
+        # Check if output directory already has images
+        OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/no_edge/epochs_$((10#$EPOCH_NUM))"
+        if [ -d "$OUTPUT_CHECK" ]; then
+            # Count PNG files in output directory
+            PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+            if [ "$PNG_COUNT" -gt 0 ]; then
+                echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
+                ((NO_EDGE_SKIPPED++))
+                continue
+            fi
+        fi
         
+        echo "→ 处理 epoch=$EPOCH_NUM"
         python scripts/auto_inference.py \
-            --logs_dir "$TARGET_LOG_DIR" \
+            --ckpt "$CKPT_FILE" \
+            --logs_dir "$USER_LOGS_DIR" \
             --output_base "$OUTPUT_BASE" \
             --sub_folder "no_edge" \
             --init_img "$DEFAULT_INIT_IMG" \
@@ -365,7 +299,14 @@ inference_all_checkpoints() {
             --use_edge_processing \
             --use_white_edge \
             --skip_existing
-    fi
+        
+        if [ $? -eq 0 ]; then
+            ((NO_EDGE_PROCESSED++))
+        fi
+    done
+    
+    echo ""
+    echo "NO-EDGE 模式统计: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
     
     echo ""
     echo "===================================================="
@@ -373,14 +314,12 @@ inference_all_checkpoints() {
     echo "===================================================="
     echo ""
     
-    # Show statistics if in single directory mode
-    if [ -n "$SELECTED_DIR_NAME" ]; then
-        echo "统计信息："
-        echo "  EDGE 模式: 已处理 $EDGE_PROCESSED 个，跳过 $EDGE_SKIPPED 个"
-        echo "  NO-EDGE 模式: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
-        echo "  总计: 已处理 $((EDGE_PROCESSED + NO_EDGE_PROCESSED)) 个，跳过 $((EDGE_SKIPPED + NO_EDGE_SKIPPED)) 个"
-        echo ""
-    fi
+    # Show statistics
+    echo "统计信息："
+    echo "  EDGE 模式: 已处理 $EDGE_PROCESSED 个，跳过 $EDGE_SKIPPED 个"
+    echo "  NO-EDGE 模式: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
+    echo "  总计: 已处理 $((EDGE_PROCESSED + NO_EDGE_PROCESSED)) 个，跳过 $((EDGE_SKIPPED + NO_EDGE_SKIPPED)) 个"
+    echo ""
     
     echo "✓ 所有推理结果已生成，指标已自动计算"
     echo "结果保存在各子目录的 metrics.json 文件中"
@@ -391,11 +330,7 @@ inference_all_checkpoints() {
     echo ""
     
     # Determine the results path
-    if [ -n "$SELECTED_DIR_NAME" ]; then
-        RESULTS_PATH="$OUTPUT_BASE/$SELECTED_DIR_NAME"
-    else
-        RESULTS_PATH="$OUTPUT_BASE"
-    fi
+    RESULTS_PATH="$OUTPUT_BASE/$SELECTED_DIR_NAME"
     
     # Check if Python script exists
     PYTHON_SCRIPT="scripts/generate_metrics_report.py"
@@ -855,26 +790,63 @@ generate_report() {
     echo "=================================================="
     echo ""
     
-    # Get inference results path
-    while true; do
-        read -p "请输入推理结果目录路径: " RESULTS_PATH
+    # Find latest directory in /logs
+    LOGS_BASE_DIR="/root/dp/StableSR_Edge_v2_loss/logs"
+    
+    if [ -d "$LOGS_BASE_DIR" ]; then
+        # Get list of directories (excluding child_runs) sorted by modification time
+        LATEST_DIR=$(find "$LOGS_BASE_DIR" -mindepth 1 -maxdepth 1 -type d ! -name "child_runs" -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
         
-        if [ -z "$RESULTS_PATH" ]; then
-            echo "❌ 错误：路径不能为空"
-            continue
-        fi
-        
-        if [ ! -d "$RESULTS_PATH" ]; then
-            echo "❌ 错误：目录不存在: $RESULTS_PATH"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
+        if [ -n "$LATEST_DIR" ]; then
+            DIR_NAME=$(basename "$LATEST_DIR")
+            echo "检测到 logs 目录中最新的目录:"
+            echo "  $DIR_NAME"
+            echo ""
+            read -p "是否使用此目录? (y/n) [y]: " USE_LATEST
+            USE_LATEST=${USE_LATEST:-y}
+            
+            if [ "$USE_LATEST" = "y" ] || [ "$USE_LATEST" = "Y" ]; then
+                RESULTS_PATH="$LATEST_DIR"
+                echo "✓ 使用目录: $RESULTS_PATH"
+            else
+                RESULTS_PATH=""
             fi
         else
-            echo "✓ 目录存在: $RESULTS_PATH"
-            break
+            echo "⚠ 未在 logs 目录中找到任何子目录"
+            RESULTS_PATH=""
         fi
-    done
+    else
+        echo "⚠ logs 目录不存在: $LOGS_BASE_DIR"
+        RESULTS_PATH=""
+    fi
+    
+    # If no path selected, ask user to input manually
+    if [ -z "$RESULTS_PATH" ]; then
+        echo ""
+        while true; do
+            read -p "请输入推理结果目录路径: " RESULTS_PATH
+            
+            if [ -z "$RESULTS_PATH" ]; then
+                echo "❌ 错误：路径不能为空"
+                read -p "是否返回菜单? (y/n): " return_menu
+                if [ "$return_menu" = "y" ] || [ "$return_menu" = "Y" ]; then
+                    return
+                fi
+                continue
+            fi
+            
+            if [ ! -d "$RESULTS_PATH" ]; then
+                echo "❌ 错误：目录不存在: $RESULTS_PATH"
+                read -p "重新输入? (y/n): " retry
+                if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                    return
+                fi
+            else
+                echo "✓ 目录存在: $RESULTS_PATH"
+                break
+            fi
+        done
+    fi
     
     echo ""
     echo "正在扫描推理结果目录..."
