@@ -125,7 +125,11 @@ def create_output_dir(base_output_dir, exp_name, epoch_num, sub_folder=None, cre
     if epoch_num == "last":
         epoch_dir = "epochs_last"
     else:
-        epoch_dir = f"epochs_{int(epoch_num):d}"
+        # Try to convert to int, if fails use as string (e.g., "baseline")
+        try:
+            epoch_dir = f"epochs_{int(epoch_num):d}"
+        except (ValueError, TypeError):
+            epoch_dir = f"epochs_{epoch_num}"
     
     # Build path with optional subfolder
     if sub_folder:
@@ -361,8 +365,45 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
     # Print command
     print("\n" + "="*80)
     print("Running inference:")
-    print(" ".join(cmd))
+    cmd_str = " ".join(cmd)
+    print(cmd_str)
     print("="*80 + "\n")
+    
+    # Save command to file in output directory
+    os.makedirs(output_dir, exist_ok=True)
+    cmd_file = os.path.join(output_dir, "inference_command.txt")
+    try:
+        with open(cmd_file, 'w') as f:
+            f.write("# Inference Command\n")
+            f.write("# Generated on: " + __import__('datetime').datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n\n")
+            f.write(cmd_str + "\n\n")
+            f.write("# Command with parameters:\n")
+            f.write(f"checkpoint: {checkpoint_path}\n")
+            f.write(f"config: {config_file}\n")
+            f.write(f"init_img: {init_img_dir}\n")
+            f.write(f"gt_img: {gt_img_dir}\n")
+            f.write(f"output: {output_dir}\n")
+            f.write(f"ddpm_steps: {ddpm_steps}\n")
+            f.write(f"dec_w: {dec_w}\n")
+            f.write(f"seed: {seed}\n")
+            f.write(f"n_samples: {n_samples}\n")
+            f.write(f"vqgan_ckpt: {vqgan_ckpt}\n")
+            f.write(f"colorfix_type: {colorfix_type}\n")
+            f.write(f"use_edge_processing: {use_edge_processing}\n")
+            f.write(f"use_white_edge: {use_white_edge}\n")
+        print(f"✓ Command saved to: {cmd_file}")
+    except Exception as e:
+        print(f"⚠ Warning: Could not save command file: {e}")
+    
+    # Copy config yaml file to output directory
+    try:
+        import shutil
+        config_basename = os.path.basename(config_file)
+        config_dest = os.path.join(output_dir, f"config_{config_basename}")
+        shutil.copy2(config_file, config_dest)
+        print(f"✓ Config file saved to: {config_dest}")
+    except Exception as e:
+        print(f"⚠ Warning: Could not copy config file: {e}")
     
     if dry_run:
         print("[DRY RUN] Skipping actual execution")
@@ -452,6 +493,10 @@ def main():
                        help="Calculate PSNR/SSIM/LPIPS metrics (default: True)")
     parser.add_argument("--no_calculate_metrics", dest="calculate_metrics", action="store_false",
                        help="Skip all metric calculations")
+    parser.add_argument("--epoch_override", type=str, default=None,
+                       help="Override epoch number for output directory naming (useful for comparison models)")
+    parser.add_argument("--exp_name_override", type=str, default=None,
+                       help="Override experiment name for output directory naming (useful for comparison models)")
     
     args = parser.parse_args()
     
@@ -468,7 +513,10 @@ def main():
         
         # Extract experiment name and epoch from checkpoint path
         # Example: logs/exp_name/checkpoints/epoch=000047.ckpt
-        if "epoch=" in ckpt_path.name:
+        if args.epoch_override:
+            # Use override epoch number (for comparison models)
+            epoch_num = args.epoch_override
+        elif "epoch=" in ckpt_path.name:
             epoch_num = re.search(r'epoch=(\d+)', ckpt_path.name).group(1)
         elif ckpt_path.name == "last.ckpt":
             epoch_num = "last"
@@ -476,7 +524,10 @@ def main():
             epoch_num = "unknown"
         
         # Try to extract experiment name from path
-        if "checkpoints" in str(ckpt_path):
+        if args.exp_name_override:
+            # Use override experiment name (for comparison models)
+            exp_name = args.exp_name_override
+        elif "checkpoints" in str(ckpt_path):
             exp_name = ckpt_path.parent.parent.name
         else:
             exp_name = "custom_model"

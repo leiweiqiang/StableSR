@@ -43,7 +43,7 @@ EOF
 LOGS_DIR="logs"
 CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_loss.yaml"
 VQGAN_CKPT="/root/checkpoints/vqgan_cfw_00011.ckpt"
-DDPM_STEPS=1000
+DDPM_STEPS=200
 DEC_W=0.5
 SEED=42
 N_SAMPLES=1
@@ -119,7 +119,6 @@ inference_all_checkpoints() {
     # Get all directories in user-specified directory
     if [ ! -d "$USER_LOGS_DIR" ]; then
         echo "❌ 错误：目录不存在: $USER_LOGS_DIR"
-        read -p "按 Enter 返回菜单..."
         return
     fi
     
@@ -128,7 +127,6 @@ inference_all_checkpoints() {
     
     if [ ${#LOG_DIRS[@]} -eq 0 ]; then
         echo "❌ 错误：目录下没有找到子目录"
-        read -p "按 Enter 返回菜单..."
         return
     fi
     
@@ -168,8 +166,6 @@ inference_all_checkpoints() {
     echo "包括 edge 和 no-edge 两种模式。"
     echo ""
     
-    read -p "按 Enter 继续，或按 Ctrl+C 取消..."
-    
     # Process checkpoints in selected directory
     echo ""
     echo "检查目录下的 checkpoints..."
@@ -177,7 +173,6 @@ inference_all_checkpoints() {
     
     if [ ! -d "$CKPT_DIR" ]; then
         echo "❌ 错误：checkpoints 目录不存在: $CKPT_DIR"
-        read -p "按 Enter 返回菜单..."
         return
     fi
     
@@ -186,7 +181,6 @@ inference_all_checkpoints() {
     
     if [ ${#CKPT_FILES[@]} -eq 0 ]; then
         echo "❌ 错误：没有找到 checkpoint 文件（已排除 last.ckpt）"
-        read -p "按 Enter 返回菜单..."
         return
     fi
     
@@ -309,6 +303,102 @@ inference_all_checkpoints() {
     echo "NO-EDGE 模式统计: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
     
     echo ""
+    echo "=================================================="
+    echo ""
+    
+    # Process with standard StableSR model for comparison
+    echo "正在运行标准 STABLESR 模型推理（用于对比）..."
+    echo ""
+    
+    STABLESR_CKPT="/stablesr_dataset/checkpoints/stablesr_000117.ckpt"
+    STABLESR_CONFIG="configs/stableSRNew/v2-finetune_text_T_512.yaml"
+    
+    if [ ! -f "$STABLESR_CKPT" ]; then
+        echo "⚠ 警告：标准 StableSR checkpoint 不存在: $STABLESR_CKPT"
+        echo "跳过 StableSR 模式推理"
+        STABLESR_PROCESSED=0
+        STABLESR_SKIPPED=0
+    else
+        # StableSR is a fixed baseline model, only need to run once
+        OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/stablesr/baseline"
+        
+        # Check if StableSR results already exist
+        if [ -d "$OUTPUT_CHECK" ]; then
+            PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+            if [ "$PNG_COUNT" -gt 0 ]; then
+                echo "✓ StableSR baseline 已存在 ($PNG_COUNT 张图片)，跳过"
+                STABLESR_PROCESSED=0
+                STABLESR_SKIPPED=1
+            else
+                echo "→ 运行 StableSR baseline 推理"
+                python scripts/auto_inference.py \
+                    --ckpt "$STABLESR_CKPT" \
+                    --logs_dir "$USER_LOGS_DIR" \
+                    --output_base "$OUTPUT_BASE" \
+                    --sub_folder "stablesr" \
+                    --init_img "$DEFAULT_INIT_IMG" \
+                    --gt_img "$DEFAULT_GT_IMG" \
+                    --config "$STABLESR_CONFIG" \
+                    --vqgan_ckpt "$VQGAN_CKPT" \
+                    --ddpm_steps $DDPM_STEPS \
+                    --dec_w $DEC_W \
+                    --seed $SEED \
+                    --n_samples $N_SAMPLES \
+                    --colorfix_type "$COLORFIX_TYPE" \
+                    --no_edge_processing \
+                    --skip_existing \
+                    --epoch_override "baseline" \
+                    --exp_name_override "$SELECTED_DIR_NAME"
+                
+                if [ $? -eq 0 ]; then
+                    STABLESR_PROCESSED=1
+                    STABLESR_SKIPPED=0
+                else
+                    STABLESR_PROCESSED=0
+                    STABLESR_SKIPPED=0
+                fi
+            fi
+        else
+            echo "→ 运行 StableSR baseline 推理"
+            python scripts/auto_inference.py \
+                --ckpt "$STABLESR_CKPT" \
+                --logs_dir "$USER_LOGS_DIR" \
+                --output_base "$OUTPUT_BASE" \
+                --sub_folder "stablesr" \
+                --init_img "$DEFAULT_INIT_IMG" \
+                --gt_img "$DEFAULT_GT_IMG" \
+                --config "$STABLESR_CONFIG" \
+                --vqgan_ckpt "$VQGAN_CKPT" \
+                --ddpm_steps $DDPM_STEPS \
+                --dec_w $DEC_W \
+                --seed $SEED \
+                --n_samples $N_SAMPLES \
+                --colorfix_type "$COLORFIX_TYPE" \
+                --no_edge_processing \
+                --skip_existing \
+                --epoch_override "baseline" \
+                --exp_name_override "$SELECTED_DIR_NAME"
+            
+            if [ $? -eq 0 ]; then
+                STABLESR_PROCESSED=1
+                STABLESR_SKIPPED=0
+            else
+                STABLESR_PROCESSED=0
+                STABLESR_SKIPPED=0
+            fi
+        fi
+        
+        echo ""
+        if [ $STABLESR_PROCESSED -eq 1 ]; then
+            echo "STABLESR 模式统计: 已完成 baseline 推理"
+        elif [ $STABLESR_SKIPPED -eq 1 ]; then
+            echo "STABLESR 模式统计: baseline 已存在，跳过"
+        else
+            echo "STABLESR 模式统计: 推理失败"
+        fi
+    fi
+    
+    echo ""
     echo "===================================================="
     echo "  全部 checkpoints 处理完成！"
     echo "===================================================="
@@ -316,9 +406,20 @@ inference_all_checkpoints() {
     
     # Show statistics
     echo "统计信息："
-    echo "  EDGE 模式: 已处理 $EDGE_PROCESSED 个，跳过 $EDGE_SKIPPED 个"
-    echo "  NO-EDGE 模式: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
-    echo "  总计: 已处理 $((EDGE_PROCESSED + NO_EDGE_PROCESSED)) 个，跳过 $((EDGE_SKIPPED + NO_EDGE_SKIPPED)) 个"
+    echo "  EDGE 模式: 已处理 $EDGE_PROCESSED 个 checkpoints，跳过 $EDGE_SKIPPED 个"
+    echo "  NO-EDGE 模式: 已处理 $NO_EDGE_PROCESSED 个 checkpoints，跳过 $NO_EDGE_SKIPPED 个"
+    if [ -f "$STABLESR_CKPT" ]; then
+        if [ $STABLESR_PROCESSED -eq 1 ]; then
+            echo "  STABLESR baseline: 已完成"
+        elif [ $STABLESR_SKIPPED -eq 1 ]; then
+            echo "  STABLESR baseline: 已存在（跳过）"
+        else
+            echo "  STABLESR baseline: 失败"
+        fi
+    else
+        echo "  STABLESR baseline: 跳过（checkpoint 不存在）"
+    fi
+    echo "  总计 checkpoints: 已处理 $((EDGE_PROCESSED + NO_EDGE_PROCESSED)) 个，跳过 $((EDGE_SKIPPED + NO_EDGE_SKIPPED)) 个"
     echo ""
     
     echo "✓ 所有推理结果已生成，指标已自动计算"
@@ -371,8 +472,6 @@ inference_all_checkpoints() {
         echo "跳过报告生成"
         echo ""
     fi
-    
-    read -p "按 Enter 返回菜单..."
 }
 
 # Function for mode 2: Specific checkpoint with edge
@@ -573,8 +672,6 @@ inference_specific_edge() {
         echo "结果保存在: $FINAL_OUTPUT/metrics.json"
         echo ""
     fi
-    
-    read -p "按 Enter 返回菜单..."
 }
 
 # Function for mode 3: Specific checkpoint without edge
@@ -778,8 +875,6 @@ inference_specific_no_edge() {
         echo "结果保存在: $FINAL_OUTPUT/metrics.json"
         echo ""
     fi
-    
-    read -p "按 Enter 返回菜单..."
 }
 
 # Function for mode 4: Generate report
@@ -856,7 +951,6 @@ generate_report() {
     PYTHON_SCRIPT="scripts/generate_metrics_report.py"
     if [ ! -f "$PYTHON_SCRIPT" ]; then
         echo "❌ 错误：找不到报告生成脚本: $PYTHON_SCRIPT"
-        read -p "按 Enter 返回菜单..."
         return
     fi
     
@@ -897,8 +991,6 @@ generate_report() {
         tail -5 "$OUTPUT_REPORT"
         echo ""
     fi
-    
-    read -p "按 Enter 返回菜单..."
 }
 
 # Main program
@@ -906,36 +998,39 @@ main() {
     # Load saved defaults
     load_defaults
     
-    # Main menu loop
-    while true; do
-        show_menu
-        read -p "请选择 [0-4]: " choice
-        
-        case $choice in
-            1)
-                inference_all_checkpoints
-                ;;
-            2)
-                inference_specific_edge
-                ;;
-            3)
-                inference_specific_no_edge
-                ;;
-            4)
-                generate_report
-                ;;
-            0)
-                echo ""
-                echo "退出中..."
-                exit 0
-                ;;
-            *)
-                echo ""
-                echo "无效选项，请选择 0-4。"
-                sleep 2
-                ;;
-        esac
-    done
+    # Main menu - execute once and exit
+    show_menu
+    read -p "请选择 [0-4]: " choice
+    
+    case $choice in
+        1)
+            inference_all_checkpoints
+            ;;
+        2)
+            inference_specific_edge
+            ;;
+        3)
+            inference_specific_no_edge
+            ;;
+        4)
+            generate_report
+            ;;
+        0)
+            echo ""
+            echo "退出中..."
+            exit 0
+            ;;
+        *)
+            echo ""
+            echo "无效选项，请选择 0-4。"
+            exit 1
+            ;;
+    esac
+    
+    # Exit after completing the selected task
+    echo ""
+    echo "✓ 任务完成，脚本退出"
+    exit 0
 }
 
 # Check if script is run with command line arguments (legacy mode)
@@ -947,7 +1042,7 @@ if [ $# -gt 0 ]; then
     
     # Default parameters
     SUB_FOLDER=""
-    INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
+    INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
     GT_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
     HR_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
     CKPT=""

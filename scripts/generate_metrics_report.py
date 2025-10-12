@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Generate CSV report from inference results metrics.
-This script reads metrics.json files from edge and no_edge directories
+This script reads metrics.json files from edge, no_edge, and stablesr directories
 and generates a comprehensive CSV report matching the table format.
 """
 
@@ -44,6 +44,9 @@ def get_column_name(edge_type, epoch_dir):
     elif edge_type == "no_edge":
         epoch_num = epoch_dir.replace("epochs_", "")
         return f"Epoch {epoch_num} (no edge)"
+    elif edge_type == "stablesr":
+        # StableSR baseline - use a single column name regardless of epoch
+        return "StableSR"
     else:
         return None
 
