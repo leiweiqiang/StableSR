@@ -97,10 +97,10 @@ class UNetModelDualcondV2WithEdge(UNetModelDualcondV2):
         # Initialize edge processing modules if enabled (after super().__init__)
         if use_edge_processing:
             self.edge_processor = EdgeMapProcessor(
-                input_channels=edge_input_channels,
-                output_channels=4,  # Output 4 channels to match U-Net input
-                target_size=64,
-                use_checkpoint=False  # Disable gradient checkpointing for edge processor to avoid gradient issues
+                # input_channels=edge_input_channels,
+                # output_channels=4,  # Output 4 channels to match U-Net input
+                # target_size=64,
+                # use_checkpoint=False  # Disable gradient checkpointing for edge processor to avoid gradient issues
             )
             
             # Use additive fusion instead of concatenation to avoid channel mismatch

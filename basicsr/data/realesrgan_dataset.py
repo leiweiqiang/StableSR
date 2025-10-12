@@ -183,7 +183,7 @@ class RealESRGANDataset(data.Dataset):
         img_gt_gray_uint8 = (img_gt_gray * 255).astype(np.uint8)
         
         # Apply stronger Gaussian blur to reduce noise and get cleaner edges
-        img_gt_blurred = cv2.GaussianBlur(img_gt_gray_uint8, (7, 7), 2.0)
+        img_gt_blurred = cv2.GaussianBlur(img_gt_gray_uint8, (5, 5), 1.4)
         
         # Use adaptive Canny edge detector with better thresholds
         # Calculate adaptive thresholds based on image statistics

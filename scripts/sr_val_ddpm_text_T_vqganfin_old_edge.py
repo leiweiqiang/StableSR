@@ -144,7 +144,7 @@ def generate_edge_map(image_tensor):
 	img_gray = cv2.cvtColor((img_np * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
 	
 	# Apply stronger Gaussian blur (match training: kernel=(7,7), sigma=2.0)
-	img_blurred = cv2.GaussianBlur(img_gray, (7, 7), 2.0)
+	img_blurred = cv2.GaussianBlur(img_gray, (5, 5), 1.4)
 	
 	# Apply adaptive Canny edge detection (match training)
 	median = np.median(img_blurred)

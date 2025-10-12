@@ -30,22 +30,25 @@ from basicsr.metrics.psnr_ssim import calculate_psnr, calculate_ssim
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.models._utils")
 warnings.filterwarnings("ignore", category=FutureWarning, module="lpips.lpips")
 
-# Load LPIPS model
+# Load LPIPS model (using taming implementation for consistency with training)
 _original_print = builtins.print
 builtins.print = lambda *args, **kwargs: None
 try:
-    import lpips
-    lpips_model = lpips.LPIPS(net='alex')
+    from taming.modules.losses.lpips import LPIPS
+    lpips_model = LPIPS()  # Uses VGG16 with learned weights, same as training
+    # Move to GPU if available and set to eval mode
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    lpips_model = lpips_model.to(device).eval()
     lpips_available = True
-except ImportError:
+except (ImportError, Exception) as e:
     lpips_available = False
     lpips_model = None
+    device = torch.device('cpu')
 builtins.print = _original_print
 
-# LPIPS transform
+# LPIPS transform (taming LPIPS expects [0,1] RGB, has internal ScalingLayer)
 lpips_transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    transforms.ToTensor()  # Convert PIL to tensor [0,1]
 ])
 
 
@@ -144,11 +147,13 @@ def calculate_metrics(output_dir, gt_img_dir, crop_border=0, test_y_channel=Fals
                 gen_pil = Image.fromarray(gen_rgb)
                 gt_pil = Image.fromarray(gt_rgb)
                 
-                gen_tensor = lpips_transform(gen_pil).unsqueeze(0)
-                gt_tensor = lpips_transform(gt_pil).unsqueeze(0)
+                gen_tensor = lpips_transform(gen_pil).unsqueeze(0).to(device)
+                gt_tensor = lpips_transform(gt_pil).unsqueeze(0).to(device)
                 
                 with torch.no_grad():
-                    img_lpips = lpips_model(gen_tensor, gt_tensor).item()
+                    lpips_value = lpips_model(gen_tensor, gt_tensor)
+                    # taming LPIPS returns [B, 1, 1, 1], extract scalar
+                    img_lpips = lpips_value.squeeze().item()
             except Exception as e:
                 print(f"Warning: LPIPS calculation failed for {img_base_name}: {e}")
                 img_lpips = -1.0

@@ -11,91 +11,46 @@ from torch.utils.checkpoint import checkpoint
 
 class EdgeMapProcessor(nn.Module):
     """
-    Memory-optimized Edge Map Processor that converts edge maps to 64x64x4 latent features
-    
-    Architecture:
-    1. Initial downsampling to reduce memory usage
-    2. 3x3 conv layers with reduced channels: 3 layers with 256 channels each
-    3. 4x4 conv layers (stride=2): 4 layers with channels [128, 64, 16, 4]
+    Encode a 3-channel image of any HxW into a 4x64x64 feature map.
     """
-    
-    def __init__(self, input_channels=3, output_channels=4, target_size=64, use_checkpoint=False):
+    def __init__(self):
         super().__init__()
-        
-        self.input_channels = input_channels
-        self.output_channels = output_channels
-        self.target_size = target_size
-        self.use_checkpoint = use_checkpoint
-        
-        # Initial downsampling to reduce memory usage (stride=2)
-        self.initial_conv = nn.Sequential(
-            nn.Conv2d(input_channels, 64, 4, stride=2, padding=1),
+        self.backbone = nn.Sequential(
+            # 3 -> 32
+            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+
+            # 32 -> 64
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),  # 下采样 /2
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
+
+            # 64 -> 128
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False), # 下采样 /2
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+
+            # 128 -> 128 (增强表达)
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
         )
-        
-        # Stage 1: 3x3 conv layers with reduced channels for memory efficiency
-        self.stage1_layers = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(64 if i == 0 else 256, 256, 3, stride=1, padding=1),
-                nn.BatchNorm2d(256),
-                nn.ReLU(inplace=True)
-            ) for i in range(3)  # Reduced from 5 to 3 layers
-        ])
-        
-        # Stage 2: 4x4 conv layers with stride=2, reduced channels
-        stage2_channels = [128, 64, 16, 4]  # Reduced from [512, 256, 64, 16, 4]
-        self.stage2_layers = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(256 if i == 0 else stage2_channels[i-1], stage2_channels[i], 4, stride=2, padding=1),
-                nn.BatchNorm2d(stage2_channels[i]),
-                nn.ReLU(inplace=True) if i < len(stage2_channels) - 1 else nn.Identity()
-            ) for i in range(4)  # Reduced from 5 to 4 layers
-        ])
-        
-        # Adaptive pooling to ensure output size is target_size x target_size
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((target_size, target_size))
-        
-    def forward(self, edge_map):
+
+
+        self.to_four = nn.Conv2d(128, 4, kernel_size=1, bias=True)
+
+        self.pool = nn.AdaptiveAvgPool2d((64, 64))
+
+    def forward(self, x):
         """
-        Forward pass through edge map processor with gradient checkpointing support
-        
-        Args:
-            edge_map: Input edge map tensor [B, C, H, W]
-            
-        Returns:
-            latent_features: Processed features [B, 4, 64, 64]
+        x: (B, 3, H, W)
+        return: (B, 4, 64, 64)
         """
-        x = edge_map
-        
-        # Initial downsampling
-        x = self.initial_conv(x)
-        
-        # Stage 1: 3x3 conv layers with gradient checkpointing for memory efficiency
-        for i, layer in enumerate(self.stage1_layers):
-            # Temporarily disable checkpointing to avoid gradient issues
-            # if self.use_checkpoint and self.training:
-            #     x = checkpoint(layer, x)
-            # else:
-            x = layer(x)
-        
-        # Stage 2: 4x4 conv layers with gradient checkpointing
-        for i, layer in enumerate(self.stage2_layers):
-            # Temporarily disable checkpointing to avoid gradient issues
-            # if self.use_checkpoint and self.training:
-            #     x = checkpoint(layer, x)
-            # else:
-            x = layer(x)
-        
-        # Adaptive pooling to ensure output size
-        x = self.adaptive_pool(x)
-        
-        # Normalize output to reasonable range for latent space
-        # Latent typically ranges in [-4, 4], so we use tanh to limit range
-        # and scale by 0.5 to keep edge features subtle
-        x = torch.tanh(x) * 0.5
-        
-        return x
+        feat = self.backbone(x)          # (B, 128, H', W')
+        feat4 = self.to_four(feat)       # (B, 4,   H', W')
+        out = self.pool(feat4)           # (B, 4,   64, 64)
+        return out
 
 
 class EdgeFusionModule(nn.Module):
