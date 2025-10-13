@@ -136,8 +136,9 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
                     )
                     # Copy pretrained weights to first 4 channels
                     new_weight[:, :4, :, :] = pretrained_weight
-                    # Initialize edge channels with small random values
-                    new_weight[:, 4:, :, :] = torch.randn_like(new_weight[:, 4:, :, :]) * 0.01
+                    # Initialize edge channels with larger random values (改进: 0.01 → 0.1)
+                    # 这样edge特征在训练初期就能有更大的影响力
+                    new_weight[:, 4:, :, :] = torch.randn_like(new_weight[:, 4:, :, :]) * 0.1
                     
                     sd[first_conv_key] = new_weight
                     print(f"✓ Extended {first_conv_key} from {pretrained_weight.shape} to {new_weight.shape}")
