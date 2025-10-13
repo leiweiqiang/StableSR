@@ -1631,10 +1631,12 @@ class LatentDiffusionSRTextWT(DDPM):
             self.model.eval()
             # self.model.train = disabled_train
             for name, param in self.model.named_parameters():
-                if 'spade' not in name:
+                # Allow edge_processor and spade parameters to train
+                if 'spade' not in name and 'edge_processor' not in name and 'model.diffusion_model.input_blocks.0.0' not in name:
                     param.requires_grad = False
                 else:
                     param.requires_grad = True
+                    print(f"✅ Trainable parameter: {name}")
 
         print('>>>>>>>>>>>>>>>>model>>>>>>>>>>>>>>>>>>>>')
         param_list = []

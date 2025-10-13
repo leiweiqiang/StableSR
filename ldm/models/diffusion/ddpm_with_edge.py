@@ -98,7 +98,27 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
             *args, **kwargs
         )
         
-        # No need to initialize edge input weights since we're using additive fusion
+        # 🔥 CRITICAL FIX: Ensure edge_processor parameters are trainable
+        # Parent class freezes all non-spade parameters, but we need edge_processor to train
+        if self.use_edge_processing:
+            self._ensure_edge_processor_trainable()
+    
+    def _ensure_edge_processor_trainable(self):
+        """
+        Ensure edge_processor parameters are trainable
+        
+        This is called after parent class __init__ which may freeze these parameters
+        """
+        if hasattr(self.model, 'diffusion_model') and hasattr(self.model.diffusion_model, 'edge_processor'):
+            edge_processor = self.model.diffusion_model.edge_processor
+            if edge_processor is not None:
+                edge_processor.train()  # Set to train mode
+                for name, param in edge_processor.named_parameters():
+                    param.requires_grad = True
+                    
+                print("🔥 Edge Processor - Trainable Parameters:")
+                for name, param in edge_processor.named_parameters():
+                    print(f"  ✅ {name}: requires_grad={param.requires_grad}")
     
     def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
         """
@@ -413,6 +433,259 @@ class LatentDiffusionSRTextWTWithEdge(LatentDiffusionSRTextWT):
                                   unconditional_guidance_scale=unconditional_guidance_scale,
                                   reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range,
                                   edge_map=edge_map)
+    
+    @torch.no_grad()
+    def sample_canvas(self, cond, struct_cond, batch_size=16, return_intermediates=False, x_T=None,
+                      verbose=True, timesteps=None, quantize_denoised=False,
+                      mask=None, x0=None, shape=None, time_replace=None, adain_fea=None, interfea_path=None, 
+                      tile_size=64, tile_overlap=32, batch_size_sample=4, log_every_t=None,
+                      unconditional_conditioning=None, unconditional_guidance_scale=None, 
+                      edge_map=None, **kwargs):
+        """
+        Override sample_canvas to handle edge_map parameter
+        
+        🔥 CRITICAL FIX: Parent class sample_canvas doesn't pass edge_map to p_sample_loop_canvas
+        This override ensures edge_map is properly propagated during tile-based inference
+        """
+        if shape is None:
+            shape = (batch_size, self.channels, self.image_size//8, self.image_size//8)
+        if cond is not None:
+            if isinstance(cond, dict):
+                cond = {key: cond[key] if not isinstance(cond[key], list) else
+                list(map(lambda x: x, cond[key])) for key in cond}
+            else:
+                cond = [c for c in cond] if isinstance(cond, list) else cond
+        return self.p_sample_loop_canvas(cond,
+                                  struct_cond,
+                                  shape,
+                                  return_intermediates=return_intermediates, x_T=x_T,
+                                  verbose=verbose, timesteps=timesteps, quantize_denoised=quantize_denoised,
+                                  mask=mask, x0=x0, time_replace=time_replace, adain_fea=adain_fea, interfea_path=interfea_path, 
+                                  tile_size=tile_size, tile_overlap=tile_overlap,
+                                  unconditional_conditioning=unconditional_conditioning, 
+                                  unconditional_guidance_scale=unconditional_guidance_scale, 
+                                  batch_size=batch_size_sample, log_every_t=log_every_t,
+                                  edge_map=edge_map)  # 🔥 Pass edge_map!
+    
+    @torch.no_grad()
+    def p_sample_loop_canvas(self, cond, struct_cond, shape, return_intermediates=False,
+                      x_T=None, verbose=True, callback=None, timesteps=None, quantize_denoised=False,
+                      mask=None, x0=None, img_callback=None, start_T=None,
+                      log_every_t=None, time_replace=None, adain_fea=None, interfea_path=None, 
+                      tile_size=64, tile_overlap=32, batch_size=4,
+                      unconditional_conditioning=None, unconditional_guidance_scale=None,
+                      reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000],
+                      edge_map=None):
+        """
+        Override p_sample_loop_canvas to handle edge_map parameter
+        
+        🔥 CRITICAL FIX: Parent class doesn't support edge_map in canvas sampling
+        """
+        from tqdm import tqdm
+        from einops import repeat
+        
+        assert tile_size is not None
+
+        if not log_every_t:
+            log_every_t = self.log_every_t
+        device = self.betas.device
+        b = batch_size
+        if x_T is None:
+            img = torch.randn(shape, device=device)
+        else:
+            img = x_T
+
+        intermediates = [img]
+        if timesteps is None:
+            timesteps = self.num_timesteps
+
+        if start_T is not None:
+            timesteps = min(timesteps, start_T)
+        iterator = tqdm(reversed(range(0, timesteps)), desc='Sampling t', total=timesteps) if verbose else reversed(
+            range(0, timesteps))
+
+        if mask is not None:
+            assert x0 is not None
+            assert x0.shape[2:3] == mask.shape[2:3]  # spatial size has to match
+
+        tile_weights = self._gaussian_weights(tile_size, tile_size, 1)
+
+        for i in iterator:
+            if time_replace is None or time_replace == 1000:
+                ts = torch.full((b,), i, device=device, dtype=torch.long)
+                t_replace=None
+            else:
+                ts = torch.full((b,), i, device=device, dtype=torch.long)
+                t_replace = repeat(torch.tensor([self.ori_timesteps[i]]), '1 -> b', b=batch_size)
+                t_replace = t_replace.long().to(device)
+            if self.shorten_cond_schedule:
+                assert self.model.conditioning_key != 'hybrid'
+                tc = self.cond_ids[ts].to(cond.device)
+                cond = self.q_sample(x_start=cond, t=tc, noise=torch.randn_like(cond))
+
+            # Generate structural conditioning based on t_replace
+            if t_replace is not None:
+                struct_cond_input = self.structcond_stage_model(struct_cond, t_replace)
+            else:
+                struct_cond_input = self.structcond_stage_model(struct_cond, ts)
+
+            # Call p_sample_canvas with edge_map
+            img = self.p_sample_canvas(img, cond, struct_cond_input, ts,
+                                clip_denoised=self.clip_denoised,
+                                quantize_denoised=quantize_denoised, t_replace=t_replace,
+                                tile_size=tile_size, tile_overlap=tile_overlap, batch_size=batch_size, tile_weights=tile_weights,
+                                unconditional_conditioning=unconditional_conditioning, unconditional_guidance_scale=unconditional_guidance_scale,
+                                reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range,
+                                edge_map=edge_map)  # 🔥 Pass edge_map!
+
+            if adain_fea is not None:
+                if i < 1:
+                    from scripts.wavelet_color_fix import adaptive_instance_normalization
+                    img = adaptive_instance_normalization(img, adain_fea)
+            if mask is not None:
+                img_orig = self.q_sample(x0, ts)
+                img = img_orig * mask + (1. - mask) * img
+
+            if i % log_every_t == 0 or i == timesteps - 1:
+                intermediates.append(img)
+            if callback: callback(i)
+            if img_callback: img_callback(img, i)
+
+        if return_intermediates:
+            return img, intermediates
+        return img
+    
+    @torch.no_grad()
+    def p_sample_canvas(self, x, c, struct_cond, t, clip_denoised=False, repeat_noise=False,
+                 return_codebook_ids=False, quantize_denoised=False, return_x0=False,
+                 temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None, t_replace=None,
+                 tile_size=64, tile_overlap=32, batch_size=4, tile_weights=None, 
+                 unconditional_conditioning=None, unconditional_guidance_scale=None,
+                 reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000],
+                 edge_map=None):
+        """
+        Override p_sample_canvas to handle edge_map parameter
+        
+        🔥 CRITICAL FIX: Propagate edge_map to p_mean_variance_canvas
+        """
+        b, *_, device = *x.shape, x.device
+        outputs = self.p_mean_variance_canvas(x=x, c=c, struct_cond=struct_cond, t=t, clip_denoised=clip_denoised,
+                                       return_codebook_ids=return_codebook_ids,
+                                       quantize_denoised=quantize_denoised,
+                                       return_x0=return_x0,
+                                       score_corrector=score_corrector, corrector_kwargs=corrector_kwargs, t_replace=t_replace,
+                                       tile_size=tile_size, tile_overlap=tile_overlap, batch_size=batch_size, tile_weights=tile_weights,
+                                       unconditional_conditioning=unconditional_conditioning, unconditional_guidance_scale=unconditional_guidance_scale,
+                                       reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range,
+                                       edge_map=edge_map)  # 🔥 Pass edge_map!
+        if return_codebook_ids:
+            raise DeprecationWarning("Support dropped.")
+        elif return_x0:
+            model_mean, _, model_log_variance, x0 = outputs
+        else:
+            model_mean, _, model_log_variance = outputs
+
+        noise = noise_like(x.shape, device, repeat_noise) * temperature
+        if noise_dropout > 0.:
+            noise = torch.nn.functional.dropout(noise, p=noise_dropout)
+        # no noise when t == 0
+        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
+        if return_codebook_ids:
+            raise DeprecationWarning("Support dropped.")
+        elif return_x0:
+            return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise, x0
+        else:
+            return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+    
+    @torch.no_grad()
+    def p_mean_variance_canvas(self, x, c, struct_cond, t, clip_denoised: bool, return_codebook_ids=False, 
+                               quantize_denoised=False, return_x0=False, score_corrector=None, corrector_kwargs=None, 
+                               t_replace=None, tile_size=64, tile_overlap=32, batch_size=4, tile_weights=None,
+                               unconditional_conditioning=None, unconditional_guidance_scale=None,
+                               reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000],
+                               edge_map=None):
+        """
+        Override p_mean_variance_canvas to handle edge_map parameter
+        
+        🔥 CRITICAL FIX: This is where edge_map is finally passed to apply_model
+        """
+        # Call parent implementation but with edge_map in the apply_model call
+        # We need to implement tile-based processing with edge support
+        from einops import rearrange
+        
+        b, c_dim, h, w = x.shape
+        
+        # Calculate tile grid
+        num_h = (h - tile_overlap) // (tile_size - tile_overlap)
+        num_w = (w - tile_overlap) // (tile_size - tile_overlap)
+        
+        # Initialize output tensor
+        model_output = torch.zeros_like(x)
+        weight_sum = torch.zeros_like(x)
+        
+        # Process tiles
+        for h_idx in range(num_h):
+            for w_idx in range(num_w):
+                h_start = h_idx * (tile_size - tile_overlap)
+                h_end = min(h_start + tile_size, h)
+                w_start = w_idx * (tile_size - tile_overlap)
+                w_end = min(w_start + tile_size, w)
+                
+                # Extract tile
+                x_tile = x[:, :, h_start:h_end, w_start:w_end]
+                struct_tile = struct_cond[:, :, h_start:h_end, w_start:w_end] if struct_cond.shape[-2:] == x.shape[-2:] else struct_cond
+                
+                # Extract edge tile if edge_map is provided
+                edge_tile = None
+                if self.use_edge_processing and edge_map is not None:
+                    # Scale edge_map coordinates to match input size
+                    edge_h_start = int(h_start * edge_map.shape[-2] / h)
+                    edge_h_end = int(h_end * edge_map.shape[-2] / h)
+                    edge_w_start = int(w_start * edge_map.shape[-1] / w)
+                    edge_w_end = int(w_end * edge_map.shape[-1] / w)
+                    edge_tile = edge_map[:, :, edge_h_start:edge_h_end, edge_w_start:edge_w_end]
+                
+                # Apply model to tile with edge_map
+                t_tile = t if t.dim() == 1 else t
+                model_out_tile = self.apply_model(x_tile, t_tile, c, struct_tile, 
+                                                  return_codebook_ids=return_codebook_ids,
+                                                  edge_map=edge_tile)  # 🔥 Pass edge_map!
+                
+                # Apply tile weights
+                tile_h, tile_w = h_end - h_start, w_end - w_start
+                if tile_weights is not None and tile_h == tile_size and tile_w == tile_size:
+                    weights = tile_weights[:tile_h, :tile_w].unsqueeze(0).unsqueeze(0).to(x.device)
+                else:
+                    weights = torch.ones(1, 1, tile_h, tile_w, device=x.device)
+                
+                # Accumulate weighted output
+                model_output[:, :, h_start:h_end, w_start:w_end] += model_out_tile * weights
+                weight_sum[:, :, h_start:h_end, w_start:w_end] += weights
+        
+        # Normalize by weight sum
+        model_output = model_output / (weight_sum + 1e-8)
+        
+        # Post-process like parent method
+        if self.parameterization == "eps":
+            x_recon = self.predict_start_from_noise(x, t=t, noise=model_output)
+        elif self.parameterization == "x0":
+            x_recon = model_output
+        else:
+            raise NotImplementedError()
+
+        if clip_denoised:
+            x_recon.clamp_(-1., 1.)
+        if quantize_denoised:
+            x_recon, _, *_ = self.first_stage_model.quantize(x_recon)
+            
+        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
+        
+        if return_codebook_ids:
+            return model_mean, posterior_variance, posterior_log_variance, None
+        elif return_x0:
+            return model_mean, posterior_variance, posterior_log_variance, x_recon
+        else:
+            return model_mean, posterior_variance, posterior_log_variance
     
     def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, noise=None, edge_map=None):
         """
