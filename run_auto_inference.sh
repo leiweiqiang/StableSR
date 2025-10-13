@@ -163,7 +163,7 @@ inference_all_checkpoints() {
     save_defaults
     
     echo "将处理所有 checkpoint"
-    echo "包括 edge 和 no-edge 两种模式。"
+    echo "包括 edge（真实边缘）、no-edge（黑色边缘）和 dummy-edge（固定边缘）三种模式。"
     echo ""
     
     # Process checkpoints in selected directory
@@ -177,7 +177,8 @@ inference_all_checkpoints() {
     fi
     
     # Find all checkpoint files (excluding last.ckpt)
-    mapfile -t CKPT_FILES < <(find "$CKPT_DIR" -name "*.ckpt" -type f ! -name "last.ckpt" | sort)
+    # Include both regular files and symbolic links
+    mapfile -t CKPT_FILES < <(find "$CKPT_DIR" -name "*.ckpt" \( -type f -o -type l \) ! -name "last.ckpt" | sort)
     
     if [ ${#CKPT_FILES[@]} -eq 0 ]; then
         echo "❌ 错误：没有找到 checkpoint 文件（已排除 last.ckpt）"
@@ -247,7 +248,7 @@ inference_all_checkpoints() {
     echo ""
     
     # Process each checkpoint for no-edge mode
-    echo "正在运行 NO-EDGE 模式推理（使用白色边缘图）..."
+    echo "正在运行 NO-EDGE 模式推理（使用黑色边缘图）..."
     echo ""
     
     NO_EDGE_PROCESSED=0
@@ -301,6 +302,68 @@ inference_all_checkpoints() {
     
     echo ""
     echo "NO-EDGE 模式统计: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
+    
+    echo ""
+    echo "=================================================="
+    echo ""
+    
+    # Process each checkpoint for dummy-edge mode
+    echo "正在运行 DUMMY-EDGE 模式推理（使用固定dummy edge图）..."
+    echo ""
+    
+    DUMMY_EDGE_PROCESSED=0
+    DUMMY_EDGE_SKIPPED=0
+    DUMMY_EDGE_PATH="/stablesr_dataset/default_edge.png"
+    
+    for CKPT_FILE in "${CKPT_FILES[@]}"; do
+        # Extract epoch number from checkpoint filename
+        CKPT_BASENAME=$(basename "$CKPT_FILE")
+        if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+            EPOCH_NUM="${BASH_REMATCH[1]}"
+        else
+            echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
+            continue
+        fi
+        
+        # Check if output directory already has images
+        OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/dummy_edge/epochs_$((10#$EPOCH_NUM))"
+        if [ -d "$OUTPUT_CHECK" ]; then
+            # Count PNG files in output directory
+            PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+            if [ "$PNG_COUNT" -gt 0 ]; then
+                echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
+                ((DUMMY_EDGE_SKIPPED++))
+                continue
+            fi
+        fi
+        
+        echo "→ 处理 epoch=$EPOCH_NUM"
+        python scripts/auto_inference.py \
+            --ckpt "$CKPT_FILE" \
+            --logs_dir "$USER_LOGS_DIR" \
+            --output_base "$OUTPUT_BASE" \
+            --sub_folder "dummy_edge" \
+            --init_img "$DEFAULT_INIT_IMG" \
+            --gt_img "$DEFAULT_GT_IMG" \
+            --config "$CONFIG" \
+            --vqgan_ckpt "$VQGAN_CKPT" \
+            --ddpm_steps $DDPM_STEPS \
+            --dec_w $DEC_W \
+            --seed $SEED \
+            --n_samples $N_SAMPLES \
+            --colorfix_type "$COLORFIX_TYPE" \
+            --use_edge_processing \
+            --use_dummy_edge \
+            --dummy_edge_path "$DUMMY_EDGE_PATH" \
+            --skip_existing
+        
+        if [ $? -eq 0 ]; then
+            ((DUMMY_EDGE_PROCESSED++))
+        fi
+    done
+    
+    echo ""
+    echo "DUMMY-EDGE 模式统计: 已处理 $DUMMY_EDGE_PROCESSED 个，跳过 $DUMMY_EDGE_SKIPPED 个"
     
     echo ""
     echo "=================================================="
@@ -408,6 +471,7 @@ inference_all_checkpoints() {
     echo "统计信息："
     echo "  EDGE 模式: 已处理 $EDGE_PROCESSED 个 checkpoints，跳过 $EDGE_SKIPPED 个"
     echo "  NO-EDGE 模式: 已处理 $NO_EDGE_PROCESSED 个 checkpoints，跳过 $NO_EDGE_SKIPPED 个"
+    echo "  DUMMY-EDGE 模式: 已处理 $DUMMY_EDGE_PROCESSED 个 checkpoints，跳过 $DUMMY_EDGE_SKIPPED 个"
     if [ -f "$STABLESR_CKPT" ]; then
         if [ $STABLESR_PROCESSED -eq 1 ]; then
             echo "  STABLESR baseline: 已完成"
@@ -419,7 +483,7 @@ inference_all_checkpoints() {
     else
         echo "  STABLESR baseline: 跳过（checkpoint 不存在）"
     fi
-    echo "  总计 checkpoints: 已处理 $((EDGE_PROCESSED + NO_EDGE_PROCESSED)) 个，跳过 $((EDGE_SKIPPED + NO_EDGE_SKIPPED)) 个"
+    echo "  总计 checkpoints: 已处理 $((EDGE_PROCESSED + NO_EDGE_PROCESSED + DUMMY_EDGE_PROCESSED)) 个，跳过 $((EDGE_SKIPPED + NO_EDGE_SKIPPED + DUMMY_EDGE_SKIPPED)) 个"
     echo ""
     
     echo "✓ 所有推理结果已生成，指标已自动计算"
@@ -817,7 +881,7 @@ inference_specific_no_edge() {
     save_defaults
     
     echo ""
-    echo "正在运行 NO-EDGE 模式推理（使用白色边缘图）..."
+    echo "正在运行 NO-EDGE 模式推理（使用黑色边缘图）..."
     echo ""
     
     # Extract experiment name from checkpoint path for output naming
@@ -827,7 +891,7 @@ inference_specific_no_edge() {
     
     # Build command
     # For no-edge mode, we use --use_edge_processing with --use_white_edge
-    # This passes white (all ones) edge maps to the model
+    # This passes black (all negative ones) edge maps to the model
     CMD="python scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py \
         --config \"$CONFIG_PATH\" \
         --ckpt \"$CKPT\" \

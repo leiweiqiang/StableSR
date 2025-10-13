@@ -320,6 +320,7 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
                   gt_img_dir, vqgan_ckpt, ddpm_steps=200, dec_w=0.5, 
                   seed=42, n_samples=1, colorfix_type="wavelet", 
                   use_edge_processing=True, use_white_edge=False, 
+                  use_dummy_edge=False, dummy_edge_path=None,
                   calculate_metrics_flag=True, dry_run=False):
     """
     Run inference using sr_val_ddpm_text_T_vqganfin_old_edge.py
@@ -337,7 +338,9 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
         n_samples: Number of samples to generate
         colorfix_type: Type of color correction
         use_edge_processing: Whether to use edge processing
-        use_white_edge: Whether to use white (all ones) edge maps
+        use_white_edge: Whether to use black (all negative ones) edge maps for no-edge mode
+        use_dummy_edge: Whether to use a fixed dummy edge map
+        dummy_edge_path: Path to dummy edge image file
         dry_run: If True, only print the command without executing
     """
     # Construct command
@@ -361,6 +364,11 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
     
     if use_white_edge:
         cmd.append("--use_white_edge")
+    
+    if use_dummy_edge:
+        cmd.append("--use_dummy_edge")
+        if dummy_edge_path:
+            cmd.extend(["--dummy_edge_path", dummy_edge_path])
     
     # Print command
     print("\n" + "="*80)
@@ -391,6 +399,8 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
             f.write(f"colorfix_type: {colorfix_type}\n")
             f.write(f"use_edge_processing: {use_edge_processing}\n")
             f.write(f"use_white_edge: {use_white_edge}\n")
+            f.write(f"use_dummy_edge: {use_dummy_edge}\n")
+            f.write(f"dummy_edge_path: {dummy_edge_path}\n")
         print(f"✓ Command saved to: {cmd_file}")
     except Exception as e:
         print(f"⚠ Warning: Could not save command file: {e}")
@@ -474,7 +484,11 @@ def main():
                        action="store_false",
                        help="Disable edge processing")
     parser.add_argument("--use_white_edge", action="store_true", default=False,
-                       help="Use white (all ones) edge maps instead of generated edge maps")
+                       help="Use black (all negative ones) edge maps instead of generated edge maps (no edge mode)")
+    parser.add_argument("--use_dummy_edge", action="store_true", default=False,
+                       help="Use a fixed dummy edge map for all images")
+    parser.add_argument("--dummy_edge_path", type=str, default="/stablesr_dataset/default_edge.png",
+                       help="Path to dummy edge image file")
     
     # Script options
     parser.add_argument("--dry_run", action="store_true",
@@ -633,6 +647,8 @@ def main():
                 colorfix_type=args.colorfix_type,
                 use_edge_processing=args.use_edge_processing,
                 use_white_edge=args.use_white_edge,
+                use_dummy_edge=args.use_dummy_edge,
+                dummy_edge_path=args.dummy_edge_path,
                 calculate_metrics_flag=args.calculate_metrics,
                 dry_run=args.dry_run
             )

@@ -44,6 +44,9 @@ def get_column_name(edge_type, epoch_dir):
     elif edge_type == "no_edge":
         epoch_num = epoch_dir.replace("epochs_", "")
         return f"Epoch {epoch_num} (no edge)"
+    elif edge_type == "dummy_edge":
+        epoch_num = epoch_dir.replace("epochs_", "")
+        return f"Epoch {epoch_num} (dummy edge)"
     elif edge_type == "stablesr":
         # StableSR baseline - use a single column name regardless of epoch
         return "StableSR"
@@ -145,21 +148,37 @@ def generate_csv_report(metrics_data, image_files, output_path):
     """Generate the final CSV report."""
     
     # Define column order (based on the image format)
-    # Edge and no edge results for the same epoch should be adjacent
+    # For each epoch: edge → no edge → dummy edge
     column_order = [
         "StableSR",
+        # Epoch 47
         "Epoch 47 (edge)",
         "Epoch 47 (no edge)",
+        "Epoch 47 (dummy edge)",
+        # Epoch 95
         "Epoch 95 (edge)", 
         "Epoch 95 (no edge)",
+        "Epoch 95 (dummy edge)",
+        # Epoch 142
         "Epoch 142 (edge)",
         "Epoch 142 (no edge)",
+        "Epoch 142 (dummy edge)",
+        # Epoch 143
+        "Epoch 143 (edge)",
+        "Epoch 143 (no edge)",
+        "Epoch 143 (dummy edge)",
+        # Epoch 190
         "Epoch 190 (edge)",
         "Epoch 190 (no edge)",
+        "Epoch 190 (dummy edge)",
+        # Epoch 238
         "Epoch 238 (edge)",
         "Epoch 238 (no edge)",
+        "Epoch 238 (dummy edge)",
+        # Epoch 285
         "Epoch 285 (edge)",
-        "Epoch 285 (no edge)"
+        "Epoch 285 (no edge)",
+        "Epoch 285 (dummy edge)"
     ]
     
     # Find columns that actually have data
@@ -215,6 +234,10 @@ def generate_csv_report(metrics_data, image_files, output_path):
                     epoch_part = col.replace(" (no edge)", "")
                     first_row.append(epoch_part)
                     second_row.append("no edge")
+                elif "(dummy edge)" in col:
+                    epoch_part = col.replace(" (dummy edge)", "")
+                    first_row.append(epoch_part)
+                    second_row.append("dummy edge")
                 else:
                     first_row.append(col)
                     second_row.append("")

@@ -1,6 +1,7 @@
 """make variations of input image with edge processing support"""
 
 import argparse, os, sys, glob
+import shutil
 
 # Ensure we import from the current project directory, not any other StableSR installations
 current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -300,7 +301,18 @@ def main():
 	parser.add_argument(
 		"--use_white_edge",
 		action="store_true",
-		help="Use white (all ones) edge maps instead of generated edge maps",
+		help="Use black (all negative ones) edge maps instead of generated edge maps (no edge mode)",
+	)
+	parser.add_argument(
+		"--use_dummy_edge",
+		action="store_true",
+		help="Use a fixed dummy edge map for all images",
+	)
+	parser.add_argument(
+		"--dummy_edge_path",
+		type=str,
+		default="/stablesr_dataset/default_edge.png",
+		help="Path to the dummy edge image to use when --use_dummy_edge is enabled",
 	)
 	parser.add_argument(
 		"--gt-img",
@@ -331,6 +343,8 @@ def main():
 	opt.outdir = os.path.expanduser(opt.outdir)
 	if opt.gt_img:
 		opt.gt_img = os.path.expanduser(opt.gt_img)
+	if opt.dummy_edge_path:
+		opt.dummy_edge_path = os.path.expanduser(opt.dummy_edge_path)
 	
 	device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -522,15 +536,45 @@ def main():
 						# Generate edge maps for each image in the batch
 						edge_maps = []
 						
-						if opt.use_white_edge:
-							# Use white (all ones) edge maps
-							# Create white edge map with same spatial size as init_image
-							# Edge maps are in range [-1, 1], so white = 1.0
+						if opt.use_dummy_edge:
+							# Use fixed dummy edge map from file
+							# Load and process dummy edge once, then reuse for all images
+							if not os.path.exists(opt.dummy_edge_path):
+								print(f"ERROR: Dummy edge file not found: {opt.dummy_edge_path}")
+								print("Falling back to black edge maps (no edges)")
+								for i in range(init_image.size(0)):
+									black_edge_map = -torch.ones_like(init_image[i:i+1])
+									edge_maps.append(black_edge_map)
+								edge_maps = torch.cat(edge_maps, dim=0)
+							else:
+								# Load dummy edge image (PIL.Image already imported at top)
+								dummy_edge_img = Image.open(opt.dummy_edge_path).convert('RGB')
+								
+								# Resize to match init_image size
+								target_size = (init_image.size(3), init_image.size(2))  # (W, H) for PIL
+								dummy_edge_img = dummy_edge_img.resize(target_size, Image.BICUBIC)
+								
+								# Convert to tensor and normalize to [-1, 1]
+								# torchvision.transforms already imported at top
+								to_tensor = torchvision.transforms.ToTensor()
+								dummy_edge_tensor = to_tensor(dummy_edge_img)  # [3, H, W] in [0, 1]
+								dummy_edge_tensor = dummy_edge_tensor * 2.0 - 1.0  # Convert to [-1, 1]
+								dummy_edge_tensor = dummy_edge_tensor.unsqueeze(0).to(device)  # [1, 3, H, W]
+								
+								# Replicate for all images in batch
+								for i in range(init_image.size(0)):
+									edge_maps.append(dummy_edge_tensor)
+								edge_maps = torch.cat(edge_maps, dim=0)
+								print(f"Using DUMMY edge map from: {opt.dummy_edge_path}")
+						elif opt.use_white_edge:
+							# Use black (all negative ones) edge maps
+							# Create black edge map with same spatial size as init_image
+							# Edge maps are in range [-1, 1], so black = -1.0
 							for i in range(init_image.size(0)):
-								white_edge_map = torch.ones_like(init_image[i:i+1])
-								edge_maps.append(white_edge_map)
+								black_edge_map = -torch.ones_like(init_image[i:i+1])
+								edge_maps.append(black_edge_map)
 							edge_maps = torch.cat(edge_maps, dim=0)
-							print("Using WHITE edge maps (all ones)")
+							print("Using BLACK edge maps (all negative ones, no edges)")
 						else:
 							# Generate edge maps from images
 							for i in range(init_image.size(0)):
@@ -575,6 +619,30 @@ def main():
 						print(f"Init latent shape: {init_latent.shape}")
 						print(f"Init latent range: [{init_latent.min():.3f}, {init_latent.max():.3f}], mean: {init_latent.mean():.3f}")
 						
+						# Save edge maps to edge_map subdirectory
+						edge_map_dir = os.path.join(outpath, "edge_map")
+						os.makedirs(edge_map_dir, exist_ok=True)
+						
+						for i in range(edge_maps.size(0)):
+							# Get the corresponding image name for this batch item
+							batch_start_idx = n * batch_size
+							img_idx = batch_start_idx + i
+							if img_idx < len(img_list_ori):
+								img_name = img_list_ori[img_idx]
+								img_basename = os.path.splitext(os.path.basename(img_name))[0]
+								
+								# Convert edge map from [-1, 1] to [0, 255]
+								edge_map_np = edge_maps[i].cpu().numpy()  # [3, H, W]
+								edge_map_np = (edge_map_np + 1.0) / 2.0 * 255.0  # Convert to [0, 255]
+								edge_map_np = np.clip(edge_map_np, 0, 255)
+								edge_map_np = np.transpose(edge_map_np, (1, 2, 0))  # [H, W, 3]
+								
+								# Save edge map
+								edge_map_save_path = os.path.join(edge_map_dir, f"{img_basename}_edge.png")
+								Image.fromarray(edge_map_np.astype(np.uint8)).save(edge_map_save_path)
+						
+						print(f"Edge maps saved to: {edge_map_dir}")
+						
 						# Use edge-enhanced sampling with edge maps
 						samples, _ = model.sample(
 							cond=semantic_c, 
@@ -617,6 +685,35 @@ def main():
 						suffix = "_edge" if opt.use_edge_processing else ""
 						Image.fromarray(x_sample.astype(np.uint8)).save(
 							os.path.join(outpath, basename+suffix+'.png'))
+						
+						# Save LR input image
+						lr_input_dir = os.path.join(outpath, "lr_input")
+						os.makedirs(lr_input_dir, exist_ok=True)
+						lr_image = init_image[i].cpu().numpy()  # [3, H, W] in [-1, 1]
+						lr_image = (lr_image + 1.0) / 2.0 * 255.0  # Convert to [0, 255]
+						lr_image = np.clip(lr_image, 0, 255)
+						lr_image = np.transpose(lr_image, (1, 2, 0))  # [H, W, 3]
+						Image.fromarray(lr_image.astype(np.uint8)).save(
+							os.path.join(lr_input_dir, f"{basename}.png"))
+						
+						# Save GT HR image if available
+						if opt.gt_img:
+							gt_hr_dir = os.path.join(outpath, "gt_hr")
+							os.makedirs(gt_hr_dir, exist_ok=True)
+							
+							# Find GT image with the same basename
+							gt_img_path = os.path.join(opt.gt_img, basename + '.png')
+							if not os.path.exists(gt_img_path):
+								# Try other common extensions
+								for ext in ['.jpg', '.jpeg', '.bmp', '.tiff']:
+									alt_path = os.path.join(opt.gt_img, basename + ext)
+									if os.path.exists(alt_path):
+										gt_img_path = alt_path
+										break
+							
+							if os.path.exists(gt_img_path):
+								# Copy GT image to output directory
+								shutil.copy2(gt_img_path, os.path.join(gt_hr_dir, f"{basename}.png"))
 
 				toc = time.time()
 
