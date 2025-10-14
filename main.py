@@ -394,6 +394,77 @@ class ImageLogger(Callback):
                 self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
 
 
+class EdgeMonitorCallback(Callback):
+    """Monitor edge-related network layers during training"""
+    def __init__(self, check_frequency=10, log_gradients=True, log_weights=True):
+        super().__init__()
+        self.check_frequency = check_frequency
+        self.log_gradients = log_gradients
+        self.log_weights = log_weights
+        self.prev_weights = {}
+    
+    @rank_zero_only
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+        if pl_module.global_step % self.check_frequency != 0:
+            return
+        
+        # Monitor EdgeMapProcessor in structcond_stage_model
+        if hasattr(pl_module, 'structcond_stage_model') and hasattr(pl_module.structcond_stage_model, 'edge_processor'):
+            edge_processor = pl_module.structcond_stage_model.edge_processor
+            
+            log_dict = {}
+            
+            # Log statistics for EdgeMapProcessor layers
+            for name, param in edge_processor.named_parameters():
+                if param.requires_grad:
+                    # Log weight statistics
+                    if self.log_weights:
+                        weight_mean = param.data.mean().item()
+                        weight_std = param.data.std().item()
+                        weight_max = param.data.max().item()
+                        weight_min = param.data.min().item()
+                        
+                        log_dict[f'edge_processor/{name}/weight_mean'] = weight_mean
+                        log_dict[f'edge_processor/{name}/weight_std'] = weight_std
+                        log_dict[f'edge_processor/{name}/weight_max'] = weight_max
+                        log_dict[f'edge_processor/{name}/weight_min'] = weight_min
+                        
+                        # Calculate weight change if we have previous values
+                        param_key = f'edge_processor.{name}'
+                        if param_key in self.prev_weights:
+                            weight_change = (param.data - self.prev_weights[param_key]).abs().mean().item()
+                            log_dict[f'edge_processor/{name}/weight_change'] = weight_change
+                        
+                        # Store current weights for next comparison
+                        self.prev_weights[param_key] = param.data.clone().detach()
+                    
+                    # Log gradient statistics
+                    if self.log_gradients and param.grad is not None:
+                        grad_mean = param.grad.mean().item()
+                        grad_std = param.grad.std().item()
+                        grad_max = param.grad.max().item()
+                        grad_min = param.grad.min().item()
+                        grad_norm = param.grad.norm().item()
+                        
+                        log_dict[f'edge_processor/{name}/grad_mean'] = grad_mean
+                        log_dict[f'edge_processor/{name}/grad_std'] = grad_std
+                        log_dict[f'edge_processor/{name}/grad_max'] = grad_max
+                        log_dict[f'edge_processor/{name}/grad_min'] = grad_min
+                        log_dict[f'edge_processor/{name}/grad_norm'] = grad_norm
+            
+            # Log to tensorboard/wandb
+            if log_dict:
+                pl_module.log_dict(log_dict, on_step=True, on_epoch=False, logger=True)
+                
+                # Also print summary to console
+                rank_zero_info(f"\n{'='*80}")
+                rank_zero_info(f"Edge Processor Monitor - Step {pl_module.global_step}")
+                rank_zero_info(f"{'='*80}")
+                for key, value in log_dict.items():
+                    if 'weight_change' in key or 'grad_norm' in key:
+                        rank_zero_info(f"  {key}: {value:.6e}")
+
+
 class CUDACallback(Callback):
     # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
     def on_train_epoch_start(self, trainer, pl_module):
