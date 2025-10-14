@@ -2089,13 +2089,27 @@ class LatentDiffusionSRTextWT(DDPM):
 
         self.lq = torch.clamp(self.lq, -1.0, 1.0)
 
+        # Load edge map from batch
+        if 'img_edge' in batch:
+            img_edge = batch['img_edge'].cuda()
+            img_edge = img_edge.to(memory_format=torch.contiguous_format).float()
+            # Normalize edge map to [-1, 1] to match other inputs
+            img_edge = img_edge * 2.0 - 1.0
+            self.edge_map = img_edge
+        else:
+            # If no edge map in batch, create a zero tensor as placeholder
+            self.edge_map = torch.zeros_like(self.gt)
+
         x = self.lq
         y = self.gt
+        edge = self.edge_map
         if bs is not None:
             x = x[:bs]
             y = y[:bs]
+            edge = edge[:bs]
         x = x.to(self.device)
         y = y.to(self.device)
+        edge = edge.to(self.device)
         encoder_posterior = self.encode_first_stage(x)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
 
@@ -2116,6 +2130,7 @@ class LatentDiffusionSRTextWT(DDPM):
 
         out = [z, text_cond]
         out.append(z_gt)
+        out.append(edge)  # Add edge_map to output
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
@@ -2287,11 +2302,11 @@ class LatentDiffusionSRTextWT(DDPM):
             return self.first_stage_model.encode(x)
 
     def shared_step(self, batch, **kwargs):
-        x, c, gt = self.get_input(batch, self.first_stage_key)
-        loss = self(x, c, gt)
+        x, c, gt, edge_map = self.get_input(batch, self.first_stage_key)
+        loss = self(x, c, edge_map, gt)
         return loss
 
-    def forward(self, x, c, gt, *args, **kwargs):
+    def forward(self, x, c, edge_map, gt, *args, **kwargs):
         index = np.random.randint(0, self.num_timesteps, size=x.size(0))
         t = torch.from_numpy(index)
         t = t.to(self.device).long()
@@ -2310,10 +2325,10 @@ class LatentDiffusionSRTextWT(DDPM):
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
         if self.test_gt:
-            struc_c = self.structcond_stage_model(gt, t_ori)
+            struc_c = self.structcond_stage_model(gt, edge_map, t_ori)
         else:
             struc_c = self.structcond_stage_model(x, t_ori)
-        return self.p_losses(gt, c, struc_c, t, t_ori, x, *args, **kwargs)
+        return self.p_losses(gt, c, struc_c, t, t_ori, x, edge_map, *args, **kwargs)
 
     def _rescale_annotations(self, bboxes, crop_coordinates):  # TODO: move to dataset
         def rescale_bbox(bbox):
@@ -2447,7 +2462,7 @@ class LatentDiffusionSRTextWT(DDPM):
         kl_prior = normal_kl(mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0)
         return mean_flat(kl_prior) / np.log(2.0)
 
-    def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, noise=None):
+    def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, edge_map=None, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
@@ -2567,7 +2582,7 @@ class LatentDiffusionSRTextWT(DDPM):
     def p_mean_variance_canvas(self, x, c, struct_cond, t, clip_denoised: bool, return_codebook_ids=False, quantize_denoised=False,
                         return_x0=False, score_corrector=None, corrector_kwargs=None, t_replace=None, tile_size=64, tile_overlap=32, batch_size=4, tile_weights=None,
                         unconditional_conditioning=None, unconditional_guidance_scale=None,
-                        reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000]):
+                        reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000], edge_map=None):
         assert tile_weights is not None
 
         if t_replace is None:
@@ -2628,12 +2643,31 @@ class LatentDiffusionSRTextWT(DDPM):
                     cond_list = torch.cat(cond_list, dim=0)
 
                     if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
-                        struct_cond_input = self.structcond_stage_model(cond_list, t_in[:input_list.size(0)])
+                        if edge_map is not None:
+                            # Edge map is in image space, need to tile it appropriately
+                            # Assuming edge_map has same spatial size as struct_cond
+                            edge_tiles = []
+                            for j in range(len(cond_list)):
+                                edge_tile = edge_map[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
+                                edge_tiles.append(edge_tile)
+                            edge_tiles_cat = torch.cat(edge_tiles, dim=0) if len(edge_tiles) > 1 else edge_tiles[0]
+                            struct_cond_input = self.structcond_stage_model(cond_list, edge_tiles_cat, t_in[:input_list.size(0)])
+                        else:
+                            struct_cond_input = self.structcond_stage_model(cond_list, t_in[:input_list.size(0)])
                         model_out = self.apply_model(input_list, t_in[:input_list.size(0)], c[:input_list.size(0)], struct_cond_input, return_ids=return_codebook_ids)
                     else:
                         input_list_ = torch.cat([input_list] * 2)
                         t_in_ = torch.cat([t_in[:input_list.size(0)]] * 2)
-                        struct_cond_input = self.structcond_stage_model(torch.cat([cond_list] * 2), t_in_)
+                        if edge_map is not None:
+                            edge_tiles = []
+                            for j in range(len(cond_list)):
+                                edge_tile = edge_map[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
+                                edge_tiles.append(edge_tile)
+                            edge_tiles_cat = torch.cat(edge_tiles, dim=0) if len(edge_tiles) > 1 else edge_tiles[0]
+                            edge_tiles_cat = torch.cat([edge_tiles_cat] * 2)
+                            struct_cond_input = self.structcond_stage_model(torch.cat([cond_list] * 2), edge_tiles_cat, t_in_)
+                        else:
+                            struct_cond_input = self.structcond_stage_model(torch.cat([cond_list] * 2), t_in_)
                         c_in = torch.cat([unconditional_conditioning[:input_list.size(0)], c[:input_list.size(0)]])
                         e_t_uncond, e_t = self.apply_model(input_list_, t_in_, c_in, struct_cond_input, return_ids=False).chunk(2)
                         model_out = e_t_uncond + unconditional_guidance_scale * (e_t - e_t_uncond)
@@ -2765,7 +2799,7 @@ class LatentDiffusionSRTextWT(DDPM):
                  return_codebook_ids=False, quantize_denoised=False, return_x0=False,
                  temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None, t_replace=None,
                  tile_size=64, tile_overlap=32, batch_size=4, tile_weights=None, unconditional_conditioning=None, unconditional_guidance_scale=None,
-                 reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000]):
+                 reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000], edge_map=None):
         b, *_, device = *x.shape, x.device
         outputs = self.p_mean_variance_canvas(x=x, c=c, struct_cond=struct_cond, t=t, clip_denoised=clip_denoised,
                                        return_codebook_ids=return_codebook_ids,
@@ -2774,7 +2808,8 @@ class LatentDiffusionSRTextWT(DDPM):
                                        score_corrector=score_corrector, corrector_kwargs=corrector_kwargs, t_replace=t_replace,
                                        tile_size=tile_size, tile_overlap=tile_overlap, batch_size=batch_size, tile_weights=tile_weights,
                                        unconditional_conditioning=unconditional_conditioning, unconditional_guidance_scale=unconditional_guidance_scale,
-                                       reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range)
+                                       reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range,
+                                       edge_map=edge_map)
         if return_codebook_ids:
             raise DeprecationWarning("Support dropped.")
             model_mean, _, model_log_variance, logits = outputs
@@ -2859,7 +2894,7 @@ class LatentDiffusionSRTextWT(DDPM):
                       log_every_t=None, time_replace=None, adain_fea=None, interfea_path=None,
                       unconditional_conditioning=None,
                       unconditional_guidance_scale=None,
-                      reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000]):
+                      reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000], edge_map=None):
 
         if not log_every_t:
             log_every_t = self.log_every_t
@@ -2899,12 +2934,18 @@ class LatentDiffusionSRTextWT(DDPM):
                 if start_T is not None:
                     if self.ori_timesteps[i] > start_T:
                          continue
-                struct_cond_input = self.structcond_stage_model(struct_cond, t_replace)
+                if edge_map is not None:
+                    struct_cond_input = self.structcond_stage_model(struct_cond, edge_map, t_replace)
+                else:
+                    struct_cond_input = self.structcond_stage_model(struct_cond, t_replace)
             else:
                 if start_T is not None:
                     if i > start_T:
                         continue
-                struct_cond_input = self.structcond_stage_model(struct_cond, ts)
+                if edge_map is not None:
+                    struct_cond_input = self.structcond_stage_model(struct_cond, edge_map, ts)
+                else:
+                    struct_cond_input = self.structcond_stage_model(struct_cond, ts)
 
             if interfea_path is not None:
                 batch_list.append(struct_cond_input)
@@ -2980,7 +3021,7 @@ class LatentDiffusionSRTextWT(DDPM):
                       mask=None, x0=None, img_callback=None, start_T=None,
                       log_every_t=None, time_replace=None, adain_fea=None, interfea_path=None, tile_size=64, tile_overlap=32, batch_size=4,
                       unconditional_conditioning=None, unconditional_guidance_scale=None,
-                      reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000],):
+                      reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000], edge_map=None):
 
         assert tile_size is not None
 
@@ -3035,7 +3076,8 @@ class LatentDiffusionSRTextWT(DDPM):
                                 quantize_denoised=quantize_denoised, t_replace=t_replace,
                                 tile_size=tile_size, tile_overlap=tile_overlap, batch_size=batch_size, tile_weights=tile_weights,
                                 unconditional_conditioning=unconditional_conditioning, unconditional_guidance_scale=unconditional_guidance_scale,
-                                reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range,)
+                                reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range,
+                                edge_map=edge_map)
 
             if adain_fea is not None:
                 if i < 1:
@@ -3060,6 +3102,7 @@ class LatentDiffusionSRTextWT(DDPM):
                unconditional_conditioning=None,
                unconditional_guidance_scale=None,
                reference_sr=None, reference_lr=0.05, reference_step=1, reference_range=[100, 1000],
+               edge_map=None,
                **kwargs):
 
         if shape is None:
@@ -3078,13 +3121,14 @@ class LatentDiffusionSRTextWT(DDPM):
                                   mask=mask, x0=x0, time_replace=time_replace, adain_fea=adain_fea, interfea_path=interfea_path, start_T=start_T,
                                   unconditional_conditioning=unconditional_conditioning,
                                   unconditional_guidance_scale=unconditional_guidance_scale,
-                                  reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range)
+                                  reference_sr=reference_sr, reference_lr=reference_lr, reference_step=reference_step, reference_range=reference_range,
+                                  edge_map=edge_map)
 
     @torch.no_grad()
     def sample_canvas(self, cond, struct_cond, batch_size=16, return_intermediates=False, x_T=None,
                verbose=True, timesteps=None, quantize_denoised=False,
                mask=None, x0=None, shape=None, time_replace=None, adain_fea=None, interfea_path=None, tile_size=64, tile_overlap=32, batch_size_sample=4, log_every_t=None,
-               unconditional_conditioning=None, unconditional_guidance_scale=None, **kwargs):
+               unconditional_conditioning=None, unconditional_guidance_scale=None, edge_map=None, **kwargs):
 
         if shape is None:
             shape = (batch_size, self.channels, self.image_size//8, self.image_size//8)
@@ -3100,7 +3144,8 @@ class LatentDiffusionSRTextWT(DDPM):
                                   return_intermediates=return_intermediates, x_T=x_T,
                                   verbose=verbose, timesteps=timesteps, quantize_denoised=quantize_denoised,
                                   mask=mask, x0=x0, time_replace=time_replace, adain_fea=adain_fea, interfea_path=interfea_path, tile_size=tile_size, tile_overlap=tile_overlap,
-                                  unconditional_conditioning=unconditional_conditioning, unconditional_guidance_scale=unconditional_guidance_scale, batch_size=batch_size_sample, log_every_t=log_every_t)
+                                  unconditional_conditioning=unconditional_conditioning, unconditional_guidance_scale=unconditional_guidance_scale, batch_size=batch_size_sample, log_every_t=log_every_t,
+                                  edge_map=edge_map)
 
     @torch.no_grad()
     def sample_log(self,cond,struct_cond,batch_size,ddim, ddim_steps,**kwargs):
@@ -3300,16 +3345,30 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
 
         self.lq = torch.clamp(self.lq, -1.0, 1.0)
 
+        # Load edge map from batch
+        if 'img_edge' in batch:
+            img_edge = batch['img_edge'].cuda()
+            img_edge = img_edge.to(memory_format=torch.contiguous_format).float()
+            # Normalize edge map to [-1, 1] to match other inputs
+            img_edge = img_edge * 2.0 - 1.0
+            self.edge_map = img_edge
+        else:
+            # If no edge map in batch, create a zero tensor as placeholder
+            self.edge_map = torch.zeros_like(self.gt)
+
         if random.random() < 0.005:
             self.lq = self.gt
 
         x = self.lq
         y = self.gt
+        edge = self.edge_map
         if bs is not None:
             x = x[:bs]
             y = y[:bs]
+            edge = edge[:bs]
         x = x.to(self.device)
         y = y.to(self.device)
+        edge = edge.to(self.device)
         encoder_posterior = self.encode_first_stage(x)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
 
@@ -3330,6 +3389,7 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
 
         out = [z, text_cond]
         out.append(z_gt)
+        out.append(edge)  # Add edge_map to output
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)

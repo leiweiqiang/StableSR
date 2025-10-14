@@ -1338,6 +1338,49 @@ class UNetModelDualcondV2(nn.Module):
         else:
             return self.out(h)
 
+class EdgeMapProcessor(nn.Module):
+    """
+    Encode a 3-channel image of any HxW into a 4x64x64 feature map.
+    """
+    def __init__(self):
+        super().__init__()
+        self.backbone = nn.Sequential(
+            # 3 -> 32
+            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+
+            # 32 -> 64
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),  # 下采样 /2
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+
+            # 64 -> 128
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False), # 下采样 /2
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+
+            # 128 -> 128 (增强表达)
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+        )
+
+
+        self.to_four = nn.Conv2d(128, 4, kernel_size=1, bias=True)
+
+        self.pool = nn.AdaptiveAvgPool2d((64, 64))
+
+    def forward(self, x):
+        """
+        x: (B, 3, H, W)
+        return: (B, 4, 64, 64)
+        """
+        feat = self.backbone(x)          # (B, 128, H', W')
+        feat4 = self.to_four(feat)       # (B, 4,   H', W')
+        out = self.pool(feat4)           # (B, 4,   64, 64)
+        return out
+
 class EncoderUNetModelWT(nn.Module):
     """
     The half UNet model with attention and timestep embedding.
@@ -1371,8 +1414,9 @@ class EncoderUNetModelWT(nn.Module):
 
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
-
-        self.in_channels = in_channels
+        
+        self.edge_processor = EdgeMapProcessor()
+        self.in_channels = 8
         self.model_channels = model_channels
         self.out_channels = out_channels
         self.num_res_blocks = num_res_blocks
@@ -1513,18 +1557,29 @@ class EncoderUNetModelWT(nn.Module):
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps):
+    def forward(self, x, edge_map, timesteps):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
+        :param edge_map: an [N x 3 x H x W] Tensor of edge maps.
         :param timesteps: a 1-D batch of timesteps.
         :return: an [N x K] Tensor of outputs.
         """
+        # Process edge map to get 4-channel features
+        edge_feat = self.edge_processor(edge_map)  # (N, 4, 64, 64)
+        
+        # Resize edge features to match the latent spatial size
+        if edge_feat.size(-1) != x.size(-1) or edge_feat.size(-2) != x.size(-2):
+            edge_feat = F.interpolate(edge_feat, size=(x.size(-2), x.size(-1)), mode='bilinear', align_corners=False)
+        
+        # Concatenate x and edge features
+        h_input = th.cat([x, edge_feat], dim=1)  # (N, 8, H, W)
+        
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
         result_list = []
         results = {}
-        h = x.type(self.dtype)
+        h = h_input.type(self.dtype)
         for module in self.input_blocks:
             last_h = h
             h = module(h, emb)
