@@ -233,7 +233,7 @@ test_data:
 lightning:
   modelcheckpoint:
     params:
-      every_n_train_steps: 1500
+      every_n_train_steps: 10
   callbacks:
     image_logger:
       target: main.ImageLogger

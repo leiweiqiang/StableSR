@@ -2,10 +2,10 @@
 # Training script for Edge-enhanced StableSR based on Turbo checkpoint
 # 基于Turbo checkpoint训练Edge增强模型
 
-cd /root/dp/StableSR_Edge_v3
+cd ~/pd/StableSR_Edge_v3
 
 # Activate environment
-source /root/miniconda/bin/activate sr_edge
+# conda activate sr_edge
 
 # Training configuration
 CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_800.yaml"
