@@ -2327,7 +2327,7 @@ class LatentDiffusionSRTextWT(DDPM):
         if self.test_gt:
             struc_c = self.structcond_stage_model(gt, edge_map, t_ori)
         else:
-            struc_c = self.structcond_stage_model(x, t_ori)
+            struc_c = self.structcond_stage_model(x, edge_map, t_ori)
         return self.p_losses(gt, c, struc_c, t, t_ori, x, edge_map, *args, **kwargs)
 
     def _rescale_annotations(self, bboxes, crop_coordinates):  # TODO: move to dataset
@@ -2651,9 +2651,10 @@ class LatentDiffusionSRTextWT(DDPM):
                                 edge_tile = edge_map[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
                                 edge_tiles.append(edge_tile)
                             edge_tiles_cat = torch.cat(edge_tiles, dim=0) if len(edge_tiles) > 1 else edge_tiles[0]
-                            struct_cond_input = self.structcond_stage_model(cond_list, edge_tiles_cat, t_in[:input_list.size(0)])
                         else:
-                            struct_cond_input = self.structcond_stage_model(cond_list, t_in[:input_list.size(0)])
+                            # Create a zero tensor as placeholder for edge_map
+                            edge_tiles_cat = torch.zeros_like(cond_list)
+                        struct_cond_input = self.structcond_stage_model(cond_list, edge_tiles_cat, t_in[:input_list.size(0)])
                         model_out = self.apply_model(input_list, t_in[:input_list.size(0)], c[:input_list.size(0)], struct_cond_input, return_ids=return_codebook_ids)
                     else:
                         input_list_ = torch.cat([input_list] * 2)
@@ -2665,9 +2666,10 @@ class LatentDiffusionSRTextWT(DDPM):
                                 edge_tiles.append(edge_tile)
                             edge_tiles_cat = torch.cat(edge_tiles, dim=0) if len(edge_tiles) > 1 else edge_tiles[0]
                             edge_tiles_cat = torch.cat([edge_tiles_cat] * 2)
-                            struct_cond_input = self.structcond_stage_model(torch.cat([cond_list] * 2), edge_tiles_cat, t_in_)
                         else:
-                            struct_cond_input = self.structcond_stage_model(torch.cat([cond_list] * 2), t_in_)
+                            # Create a zero tensor as placeholder for edge_map
+                            edge_tiles_cat = torch.zeros_like(torch.cat([cond_list] * 2))
+                        struct_cond_input = self.structcond_stage_model(torch.cat([cond_list] * 2), edge_tiles_cat, t_in_)
                         c_in = torch.cat([unconditional_conditioning[:input_list.size(0)], c[:input_list.size(0)]])
                         e_t_uncond, e_t = self.apply_model(input_list_, t_in_, c_in, struct_cond_input, return_ids=False).chunk(2)
                         model_out = e_t_uncond + unconditional_guidance_scale * (e_t - e_t_uncond)
@@ -2934,18 +2936,16 @@ class LatentDiffusionSRTextWT(DDPM):
                 if start_T is not None:
                     if self.ori_timesteps[i] > start_T:
                          continue
-                if edge_map is not None:
-                    struct_cond_input = self.structcond_stage_model(struct_cond, edge_map, t_replace)
-                else:
-                    struct_cond_input = self.structcond_stage_model(struct_cond, t_replace)
+                # Use edge_map if provided, otherwise use zeros as placeholder
+                edge_input = edge_map if edge_map is not None else torch.zeros_like(struct_cond)
+                struct_cond_input = self.structcond_stage_model(struct_cond, edge_input, t_replace)
             else:
                 if start_T is not None:
                     if i > start_T:
                         continue
-                if edge_map is not None:
-                    struct_cond_input = self.structcond_stage_model(struct_cond, edge_map, ts)
-                else:
-                    struct_cond_input = self.structcond_stage_model(struct_cond, ts)
+                # Use edge_map if provided, otherwise use zeros as placeholder
+                edge_input = edge_map if edge_map is not None else torch.zeros_like(struct_cond)
+                struct_cond_input = self.structcond_stage_model(struct_cond, edge_input, ts)
 
             if interfea_path is not None:
                 batch_list.append(struct_cond_input)
