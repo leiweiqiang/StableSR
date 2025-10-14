@@ -14,8 +14,8 @@ load_defaults() {
         DEFAULT_CKPT=""
         DEFAULT_LOGS_DIR="logs"
         DEFAULT_OUTPUT_BASE="validation_results"
-        # DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
-        DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
+        DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
+        # DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
         DEFAULT_GT_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
         DEFAULT_MAX_IMAGES="-1"
         DEFAULT_CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_800.yaml"
@@ -1106,7 +1106,8 @@ if [ $# -gt 0 ]; then
     
     # Default parameters
     SUB_FOLDER=""
-    INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
+    # INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
+    INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
     GT_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
     HR_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
     CKPT=""
