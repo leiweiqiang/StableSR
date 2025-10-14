@@ -2652,8 +2652,11 @@ class LatentDiffusionSRTextWT(DDPM):
                                 edge_tiles.append(edge_tile)
                             edge_tiles_cat = torch.cat(edge_tiles, dim=0) if len(edge_tiles) > 1 else edge_tiles[0]
                         else:
-                            # Create a zero tensor as placeholder for edge_map
-                            edge_tiles_cat = torch.zeros_like(cond_list)
+                            # Create a zero tensor as placeholder for edge_map with correct dimensions
+                            b, _, h_latent, w_latent = cond_list.shape
+                            edge_tiles_cat = torch.zeros(b, 3, h_latent * 8, w_latent * 8,
+                                                         device=cond_list.device, dtype=cond_list.dtype)
+                        
                         struct_cond_input = self.structcond_stage_model(cond_list, edge_tiles_cat, t_in[:input_list.size(0)])
                         model_out = self.apply_model(input_list, t_in[:input_list.size(0)], c[:input_list.size(0)], struct_cond_input, return_ids=return_codebook_ids)
                     else:
@@ -2667,8 +2670,12 @@ class LatentDiffusionSRTextWT(DDPM):
                             edge_tiles_cat = torch.cat(edge_tiles, dim=0) if len(edge_tiles) > 1 else edge_tiles[0]
                             edge_tiles_cat = torch.cat([edge_tiles_cat] * 2)
                         else:
-                            # Create a zero tensor as placeholder for edge_map
-                            edge_tiles_cat = torch.zeros_like(torch.cat([cond_list] * 2))
+                            # Create a zero tensor as placeholder for edge_map with correct dimensions
+                            b, _, h_latent, w_latent = cond_list.shape
+                            # Double the batch size for unconditional guidance
+                            edge_tiles_cat = torch.zeros(b * 2, 3, h_latent * 8, w_latent * 8,
+                                                         device=cond_list.device, dtype=cond_list.dtype)
+                        
                         struct_cond_input = self.structcond_stage_model(torch.cat([cond_list] * 2), edge_tiles_cat, t_in_)
                         c_in = torch.cat([unconditional_conditioning[:input_list.size(0)], c[:input_list.size(0)]])
                         e_t_uncond, e_t = self.apply_model(input_list_, t_in_, c_in, struct_cond_input, return_ids=False).chunk(2)
@@ -2937,14 +2944,28 @@ class LatentDiffusionSRTextWT(DDPM):
                     if self.ori_timesteps[i] > start_T:
                          continue
                 # Use edge_map if provided, otherwise use zeros as placeholder
-                edge_input = edge_map if edge_map is not None else torch.zeros_like(struct_cond)
+                if edge_map is not None:
+                    edge_input = edge_map
+                else:
+                    # Create edge placeholder with correct dimensions: (B, 3, H_orig, W_orig)
+                    # struct_cond is in latent space with downsampling factor of 8
+                    b, _, h_latent, w_latent = struct_cond.shape
+                    edge_input = torch.zeros(b, 3, h_latent * 8, w_latent * 8, 
+                                            device=struct_cond.device, dtype=struct_cond.dtype)
                 struct_cond_input = self.structcond_stage_model(struct_cond, edge_input, t_replace)
             else:
                 if start_T is not None:
                     if i > start_T:
                         continue
                 # Use edge_map if provided, otherwise use zeros as placeholder
-                edge_input = edge_map if edge_map is not None else torch.zeros_like(struct_cond)
+                if edge_map is not None:
+                    edge_input = edge_map
+                else:
+                    # Create edge placeholder with correct dimensions: (B, 3, H_orig, W_orig)
+                    # struct_cond is in latent space with downsampling factor of 8
+                    b, _, h_latent, w_latent = struct_cond.shape
+                    edge_input = torch.zeros(b, 3, h_latent * 8, w_latent * 8, 
+                                            device=struct_cond.device, dtype=struct_cond.dtype)
                 struct_cond_input = self.structcond_stage_model(struct_cond, edge_input, ts)
 
             if interfea_path is not None:
@@ -3172,7 +3193,7 @@ class LatentDiffusionSRTextWT(DDPM):
         use_ddim = ddim_steps is not None
 
         log = dict()
-        z, c_lq, z_gt, x, gt, yrec, xc = self.get_input(batch, self.first_stage_key,
+        z, c_lq, z_gt, edge, x, gt, yrec, xc = self.get_input(batch, self.first_stage_key,
                                            return_first_stage_outputs=True,
                                            force_c_encode=True,
                                            return_original_cond=True,
@@ -3220,7 +3241,7 @@ class LatentDiffusionSRTextWT(DDPM):
                 else:
                     cur_time_step = 1000
 
-                samples, z_denoise_row = self.sample(cond=c, struct_cond=struct_cond, batch_size=N, timesteps=cur_time_step, return_intermediates=True, time_replace=self.time_replace)
+                samples, z_denoise_row = self.sample(cond=c, struct_cond=struct_cond, batch_size=N, timesteps=cur_time_step, return_intermediates=True, time_replace=self.time_replace, edge_map=edge)
             x_samples = self.decode_first_stage(samples)
             log["samples"] = x_samples
             if plot_denoise_rows:
@@ -3232,7 +3253,7 @@ class LatentDiffusionSRTextWT(DDPM):
                 with self.ema_scope("Plotting Quantized Denoised"):
                     samples, z_denoise_row = self.sample_log(cond=c,struct_cond=struct_cond,batch_size=N,ddim=use_ddim,
                                                              ddim_steps=ddim_steps,eta=ddim_eta,
-                                                             quantize_denoised=True, x_T=x_T)
+                                                             quantize_denoised=True, x_T=x_T, edge_map=edge)
                 x_samples = self.decode_first_stage(samples.to(self.device))
                 log["samples_x0_quantized"] = x_samples
 
@@ -3246,16 +3267,16 @@ class LatentDiffusionSRTextWT(DDPM):
                 mask = mask[:, None, ...]
                 with self.ema_scope("Plotting Inpaint"):
 
-                    samples, _ = self.sample_log(cond=c,batch_size=N,ddim=use_ddim, eta=ddim_eta,
-                                                ddim_steps=ddim_steps, x0=z[:N], mask=mask)
+                    samples, _ = self.sample_log(cond=c,struct_cond=struct_cond,batch_size=N,ddim=use_ddim, eta=ddim_eta,
+                                                ddim_steps=ddim_steps, x0=z[:N], mask=mask, edge_map=edge)
                 x_samples = self.decode_first_stage(samples.to(self.device))
                 log["samples_inpainting"] = x_samples
                 log["mask"] = mask
 
                 # outpaint
                 with self.ema_scope("Plotting Outpaint"):
-                    samples, _ = self.sample_log(cond=c, batch_size=N, ddim=use_ddim,eta=ddim_eta,
-                                                ddim_steps=ddim_steps, x0=z[:N], mask=mask)
+                    samples, _ = self.sample_log(cond=c, struct_cond=struct_cond, batch_size=N, ddim=use_ddim,eta=ddim_eta,
+                                                ddim_steps=ddim_steps, x0=z[:N], mask=mask, edge_map=edge)
                 x_samples = self.decode_first_stage(samples.to(self.device))
                 log["samples_outpainting"] = x_samples
 
