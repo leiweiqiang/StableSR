@@ -27,7 +27,7 @@ model:
     #P2 weighting, we do not use in final version
     p2_gamma: ~
     p2_k: ~
-    # ignore_keys: []
+    ignore_keys: ['structcond_stage_model']
 
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModelDualcondV2
