@@ -323,7 +323,7 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
                   use_dummy_edge=False, dummy_edge_path=None,
                   calculate_metrics_flag=True, dry_run=False):
     """
-    Run inference using sr_val_ddpm_text_T_vqganfin_old_edge.py
+    Run inference using the appropriate script based on edge processing setting
     
     Args:
         checkpoint_path: Path to model checkpoint
@@ -337,19 +337,26 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
         seed: Random seed
         n_samples: Number of samples to generate
         colorfix_type: Type of color correction
-        use_edge_processing: Whether to use edge processing
+        use_edge_processing: Whether to use edge processing (selects edge vs non-edge script)
         use_white_edge: Whether to use black (all negative ones) edge maps for no-edge mode
         use_dummy_edge: Whether to use a fixed dummy edge map
         dummy_edge_path: Path to dummy edge image file
         dry_run: If True, only print the command without executing
     """
+    # Select the appropriate script based on edge processing
+    if use_edge_processing:
+        script_name = "scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py"
+        print(f"Using EDGE-enabled script: {script_name}")
+    else:
+        script_name = "scripts/sr_val_ddpm_text_T_vqganfin_old.py"
+        print(f"Using STANDARD (non-edge) script: {script_name}")
+    
     # Construct command
     cmd = [
-        "python", "scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py",
+        "python", script_name,
         "--config", config_file,
         "--ckpt", checkpoint_path,
         "--init-img", init_img_dir,
-        "--gt-img", gt_img_dir,
         "--outdir", output_dir,
         "--ddpm_steps", str(ddpm_steps),
         "--dec_w", str(dec_w),
@@ -359,16 +366,22 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
         "--colorfix_type", colorfix_type,
     ]
     
+    # Add --gt-img only if using edge processing (edge script uses it)
+    # Non-edge script doesn't have --gt-img parameter
+    if use_edge_processing:
+        cmd.extend(["--gt-img", gt_img_dir])
+    
+    # Add edge-specific flags only when using edge processing
     if use_edge_processing:
         cmd.append("--use_edge_processing")
-    
-    if use_white_edge:
-        cmd.append("--use_white_edge")
-    
-    if use_dummy_edge:
-        cmd.append("--use_dummy_edge")
-        if dummy_edge_path:
-            cmd.extend(["--dummy_edge_path", dummy_edge_path])
+        
+        if use_white_edge:
+            cmd.append("--use_white_edge")
+        
+        if use_dummy_edge:
+            cmd.append("--use_dummy_edge")
+            if dummy_edge_path:
+                cmd.extend(["--dummy_edge_path", dummy_edge_path])
     
     # Print command
     print("\n" + "="*80)
@@ -460,7 +473,8 @@ def main():
     # Model configuration
     parser.add_argument("--config", type=str,
                        default="configs/stableSRNew/v2-finetune_text_T_512_edge.yaml",
-                       help="Path to model config file")
+                       help="Path to model config file. Use v2-finetune_text_T_512_edge.yaml for edge models, "
+                            "v2-finetune_text_T_512.yaml for standard models")
     parser.add_argument("--ckpt", type=str, default=None,
                        help="Specific checkpoint to process (if set, auto-discovery is disabled)")
     parser.add_argument("--vqgan_ckpt", type=str,
@@ -478,11 +492,12 @@ def main():
                        help="Number of samples per image")
     parser.add_argument("--colorfix_type", type=str, default="wavelet",
                        help="Color correction type")
-    parser.add_argument("--use_edge_processing", action="store_true", default=True,
-                       help="Use edge processing (default: True)")
+    parser.add_argument("--use_edge_processing", action="store_true", default=False,
+                       help="Use edge processing (requires edge-trained model). "
+                            "Use with --config ending in _edge.yaml")
     parser.add_argument("--no_edge_processing", dest="use_edge_processing", 
                        action="store_false",
-                       help="Disable edge processing")
+                       help="Disable edge processing (for standard models)")
     parser.add_argument("--use_white_edge", action="store_true", default=False,
                        help="Use black (all negative ones) edge maps instead of generated edge maps (no edge mode)")
     parser.add_argument("--use_dummy_edge", action="store_true", default=False,
