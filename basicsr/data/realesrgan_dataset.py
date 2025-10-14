@@ -175,6 +175,34 @@ class RealESRGANDataset(data.Dataset):
             # left = (w - crop_pad_size) // 2 -1
             img_gt = img_gt[top:top + crop_pad_size, left:left + crop_pad_size, ...]
 
+# ------------------------ Generate edge map from GT image ------------------------ #
+        # Convert BGR to grayscale for edge detection
+        img_gt_gray = cv2.cvtColor(img_gt, cv2.COLOR_BGR2GRAY)
+        
+        # Convert float32 [0,1] to uint8 [0,255] for Canny edge detection
+        img_gt_gray_uint8 = (img_gt_gray * 255).astype(np.uint8)
+        
+        # Apply stronger Gaussian blur to reduce noise and get cleaner edges
+        img_gt_blurred = cv2.GaussianBlur(img_gt_gray_uint8, (5, 5), 1.4)
+        
+        # Use adaptive Canny edge detector with better thresholds
+        # Calculate adaptive thresholds based on image statistics
+        median = np.median(img_gt_blurred)
+        lower_thresh = int(max(0, 0.7 * median))
+        upper_thresh = int(min(255, 1.3 * median))
+        
+        # Apply Canny edge detector with adaptive thresholds
+        img_edge = cv2.Canny(img_gt_blurred, threshold1=lower_thresh, threshold2=upper_thresh)
+        
+        # Apply morphological operations to clean up the edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        img_edge = cv2.morphologyEx(img_edge, cv2.MORPH_CLOSE, kernel)
+        
+        # Convert to 3-channel for consistency
+        img_edge = cv2.cvtColor(img_edge, cv2.COLOR_GRAY2BGR)
+        
+        # Convert back to float32 [0,1] for consistency with the rest of the pipeline
+        img_edge = img_edge.astype(np.float32) / 255.0
         # ------------------------ Generate kernels (used in the first degradation) ------------------------ #
         kernel_size = random.choice(self.kernel_range)
         if np.random.uniform() < self.opt['sinc_prob']:
@@ -232,10 +260,11 @@ class RealESRGANDataset(data.Dataset):
 
         # BGR to RGB, HWC to CHW, numpy to tensor
         img_gt = img2tensor([img_gt], bgr2rgb=True, float32=True)[0]
+        img_edge = img2tensor([img_edge], bgr2rgb=True, float32=True)[0]
         kernel = torch.FloatTensor(kernel)
         kernel2 = torch.FloatTensor(kernel2)
 
-        return_d = {'gt': img_gt, 'kernel1': kernel, 'kernel2': kernel2, 'sinc_kernel': sinc_kernel, 'gt_path': gt_path}
+        return_d = {'gt': img_gt, 'img_edge': img_edge, 'kernel1': kernel, 'kernel2': kernel2, 'sinc_kernel': sinc_kernel, 'gt_path': gt_path}
         return return_d
 
     def __len__(self):
