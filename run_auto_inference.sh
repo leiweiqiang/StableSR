@@ -48,6 +48,7 @@ DEC_W=0.5
 SEED=42
 N_SAMPLES=1
 COLORFIX_TYPE="wavelet"
+INPUT_SIZE=512  # LR input size - must match training (resize_lq=True resizes LR to GT size)
 
 # Function to display menu
 show_menu() {
@@ -232,6 +233,7 @@ inference_all_checkpoints() {
             --seed $SEED \
             --n_samples $N_SAMPLES \
             --colorfix_type "$COLORFIX_TYPE" \
+            --input_size $INPUT_SIZE \
             --use_edge_processing \
             --skip_existing
         
@@ -291,6 +293,7 @@ inference_all_checkpoints() {
             --seed $SEED \
             --n_samples $N_SAMPLES \
             --colorfix_type "$COLORFIX_TYPE" \
+            --input_size $INPUT_SIZE \
             --use_edge_processing \
             --use_white_edge \
             --skip_existing
@@ -352,6 +355,7 @@ inference_all_checkpoints() {
             --seed $SEED \
             --n_samples $N_SAMPLES \
             --colorfix_type "$COLORFIX_TYPE" \
+            --input_size $INPUT_SIZE \
             --use_edge_processing \
             --use_dummy_edge \
             --dummy_edge_path "$DUMMY_EDGE_PATH" \
@@ -408,6 +412,7 @@ inference_all_checkpoints() {
                     --seed $SEED \
                     --n_samples $N_SAMPLES \
                     --colorfix_type "$COLORFIX_TYPE" \
+                    --input_size $INPUT_SIZE \
                     --no_edge_processing \
                     --skip_existing \
                     --epoch_override "baseline" \
@@ -437,6 +442,7 @@ inference_all_checkpoints() {
                 --seed $SEED \
                 --n_samples $N_SAMPLES \
                 --colorfix_type "$COLORFIX_TYPE" \
+                --input_size $INPUT_SIZE \
                 --no_edge_processing \
                 --skip_existing \
                 --epoch_override "baseline" \

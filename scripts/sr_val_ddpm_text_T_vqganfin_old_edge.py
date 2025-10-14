@@ -60,9 +60,31 @@ from ldm.models.diffusion.plms import PLMSSampler
 import math
 import copy
 from scripts.wavelet_color_fix import wavelet_reconstruction, adaptive_instance_normalization
+from datetime import datetime
 
 # Edge-specific imports
 import cv2
+
+
+class Logger(object):
+	"""
+	Logger class that writes to both console and file
+	"""
+	def __init__(self, log_file):
+		self.terminal = sys.stdout
+		self.log = open(log_file, 'a')
+	
+	def write(self, message):
+		self.terminal.write(message)
+		self.log.write(message)
+		self.log.flush()
+	
+	def flush(self):
+		self.terminal.flush()
+		self.log.flush()
+	
+	def close(self):
+		self.log.close()
 
 
 def space_timesteps(num_timesteps, section_counts):
@@ -343,8 +365,8 @@ def main():
 	parser.add_argument(
 		"--input_size",
 		type=int,
-		default=512,
-		help="input size",
+		default=128,
+		help="input size (LR resolution, should be 128 for 4x SR to 512)",
 	)
 	parser.add_argument(
 		"--dec_w",
@@ -473,6 +495,16 @@ def main():
 
 	os.makedirs(opt.outdir, exist_ok=True)
 	outpath = opt.outdir
+	
+	# Initialize logger to save console output to file
+	timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+	log_file = os.path.join(outpath, f"inference_{timestamp}.log")
+	logger = Logger(log_file)
+	sys.stdout = logger
+	print(f"\n{'='*60}")
+	print(f"Inference Log Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+	print(f"Log file: {log_file}")
+	print(f"{'='*60}\n")
 
 	batch_size = opt.n_samples
 
@@ -684,29 +716,35 @@ def main():
 								edge_maps.append(edge_map)
 							edge_maps = torch.cat(edge_maps, dim=0)
 						
-						# Verify resolution relationship: edge_map should be 4x LR
+						# Verify resolution relationship
+						# LR input is resized to input_size (typically 512) to match training
+						# Edge map is generated from GT at GT resolution (also 512)
+						# So LR (after resize) and Edge map should have the same resolution
 						if n == 0:  # Only print for first batch
 							lr_h, lr_w = init_image.size(2), init_image.size(3)
 							edge_h, edge_w = edge_maps.size(2), edge_maps.size(3)
 							print(f"\n=== Resolution Verification (Batch 0) ===")
-							print(f"LR input shape: {init_image.shape} -> spatial: {lr_h}×{lr_w}")
+							print(f"LR input shape: {init_image.shape} -> spatial: {lr_h}×{lr_w} (after resize)")
 							print(f"Edge map shape: {edge_maps.shape} -> spatial: {edge_h}×{edge_w}")
 							
 							if opt.gt_img and not opt.use_white_edge and not opt.use_dummy_edge:
-								# Edge map from GT should be 4x LR
-								expected_edge_h, expected_edge_w = lr_h * 4, lr_w * 4
-								if edge_h == expected_edge_h and edge_w == expected_edge_w:
-									print(f"✓ Edge map resolution correct: {edge_h}×{edge_w} = 4 × {lr_h}×{lr_w}")
+								# Edge map from GT should match LR size (both at GT resolution)
+								# Training: LR is resized to GT size, Edge is from GT
+								# Inference: LR is resized to input_size, Edge is from GT at GT size
+								if edge_h == lr_h and edge_w == lr_w:
+									print(f"✓ Edge map resolution correct: {edge_h}×{edge_w} = LR (after resize) {lr_h}×{lr_w}")
+									print(f"  Both at GT resolution - matches training setup")
 								else:
 									print(f"⚠ WARNING: Edge map resolution mismatch!")
-									print(f"  Expected: {expected_edge_h}×{expected_edge_w} (4× LR)")
-									print(f"  Got: {edge_h}×{edge_w}")
+									print(f"  LR (after resize): {lr_h}×{lr_w}")
+									print(f"  Edge map: {edge_h}×{edge_w}")
+									print(f"  They should match (both at GT resolution)")
 							else:
-								# Edge map from LR image (same size as LR)
+								# Edge map from LR image or special modes
 								if edge_h == lr_h and edge_w == lr_w:
-									print(f"Edge map matches LR size (using LR for edge generation)")
+									print(f"✓ Edge map matches LR size: {edge_h}×{edge_w}")
 								else:
-									print(f"Edge map size: {edge_h}×{edge_w}")
+									print(f"⚠ Edge map size {edge_h}×{edge_w} differs from LR size {lr_h}×{lr_w}")
 							
 							print(f"Edge maps range: [{edge_maps.min():.3f}, {edge_maps.max():.3f}], mean: {edge_maps.mean():.3f}")
 							print(f"Init latent shape: {init_latent.shape}")
@@ -829,6 +867,14 @@ def main():
 
 	print(f"Your samples are ready and waiting for you here: \n{outpath} \n"
 		  f" \nEnjoy.")
+	
+	# Close logger and restore stdout
+	print(f"\n{'='*60}")
+	print(f"Inference Log Ended: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+	print(f"{'='*60}")
+	sys.stdout = logger.terminal
+	logger.close()
+	print(f"\nLog saved to: {log_file}")
 
 
 if __name__ == "__main__":

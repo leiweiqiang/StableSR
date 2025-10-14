@@ -319,7 +319,7 @@ def calculate_metrics(output_dir, gt_img_dir, results_dict):
 def run_inference(checkpoint_path, output_dir, config_file, init_img_dir, 
                   gt_img_dir, vqgan_ckpt, ddpm_steps=200, dec_w=0.5, 
                   seed=42, n_samples=1, colorfix_type="wavelet", 
-                  use_edge_processing=True, use_white_edge=False, 
+                  input_size=512, use_edge_processing=True, use_white_edge=False, 
                   use_dummy_edge=False, dummy_edge_path=None,
                   calculate_metrics_flag=True, dry_run=False):
     """
@@ -364,6 +364,7 @@ def run_inference(checkpoint_path, output_dir, config_file, init_img_dir,
         "--n_samples", str(n_samples),
         "--vqgan_ckpt", vqgan_ckpt,
         "--colorfix_type", colorfix_type,
+        "--input_size", str(input_size),
     ]
     
     # Add --gt-img only if using edge processing (edge script uses it)
@@ -492,6 +493,8 @@ def main():
                        help="Number of samples per image")
     parser.add_argument("--colorfix_type", type=str, default="wavelet",
                        help="Color correction type")
+    parser.add_argument("--input_size", type=int, default=512,
+                       help="Input size for LR images (should be 512 to match training with resize_lq=True)")
     parser.add_argument("--use_edge_processing", action="store_true", default=False,
                        help="Use edge processing (requires edge-trained model). "
                             "Use with --config ending in _edge.yaml")
@@ -660,6 +663,7 @@ def main():
                 seed=args.seed,
                 n_samples=args.n_samples,
                 colorfix_type=args.colorfix_type,
+                input_size=args.input_size,
                 use_edge_processing=args.use_edge_processing,
                 use_white_edge=args.use_white_edge,
                 use_dummy_edge=args.use_dummy_edge,
