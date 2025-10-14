@@ -793,15 +793,18 @@ def main():
 						Image.fromarray(x_sample.astype(np.uint8)).save(
 							os.path.join(outpath, basename+suffix+'.png'))
 						
-						# Save LR input image
+						# Save LR input image (at ORIGINAL resolution, not resized)
 						lr_input_dir = os.path.join(outpath, "lr_input")
 						os.makedirs(lr_input_dir, exist_ok=True)
-						lr_image = init_image[i].cpu().numpy()  # [3, H, W] in [-1, 1]
-						lr_image = (lr_image + 1.0) / 2.0 * 255.0  # Convert to [0, 255]
-						lr_image = np.clip(lr_image, 0, 255)
-						lr_image = np.transpose(lr_image, (1, 2, 0))  # [H, W, 3]
-						Image.fromarray(lr_image.astype(np.uint8)).save(
-							os.path.join(lr_input_dir, f"{basename}.png"))
+						
+						# Get original LR image path
+						batch_start_idx = n * batch_size
+						img_idx = batch_start_idx + i
+						if img_idx < len(img_list_ori):
+							original_lr_path = os.path.join(opt.init_img, img_list_ori[img_idx])
+							# Load and save original LR image (without transform)
+							original_lr_img = Image.open(original_lr_path).convert("RGB")
+							original_lr_img.save(os.path.join(lr_input_dir, f"{basename}.png"))
 						
 						# Save GT HR image if available
 						if opt.gt_img:
