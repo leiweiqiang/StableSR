@@ -14,7 +14,10 @@ StableSR_Edge_v3/
 │       ├── FILE_STRUCTURE.md            # 本文件（文件结构说明）
 │       ├── test_edge_generator.py       # 测试脚本
 │       ├── test_edge.sh                 # 🚀 测试快捷脚本
-│       └── test_edge_output.png         # 测试生成的样例
+│       ├── test_edge_output.png         # 测试生成的样例
+│       └── test_images/                 # 📸 测试图片
+│           ├── cat_aigc.jpg             # 测试图片1
+│           └── OST_120.png              # 测试图片2
 │
 ├── basicsr/
 │   ├── utils/
@@ -51,6 +54,9 @@ StableSR_Edge_v3/
 | `test_edge_generator.py` | ~8KB | 完整测试套件（7个测试用例） |
 | `test_edge.sh` | ~1KB | 测试快捷脚本 |
 | `test_edge_output.png` | ~34KB | 测试生成的样例edge map |
+| `test_images/` | - | 测试图片目录 |
+| `test_images/cat_aigc.jpg` | ~256KB | AI生成的猫图测试样例 |
+| `test_images/OST_120.png` | ~974KB | OST数据集测试样例 |
 
 ### 使用EdgeMapGenerator的文件
 | 文件 | 用途 | 修改说明 |

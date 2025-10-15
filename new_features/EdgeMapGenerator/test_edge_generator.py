@@ -154,10 +154,12 @@ def test_real_image():
     print("测试6: 真实图像处理")
     print("=" * 50)
     
-    # 查找测试图像（相对于项目根目录）
+    # 查找测试图像（优先使用本目录的test_images，其次使用项目根目录的资源）
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     test_image_paths = [
-        os.path.join(project_root, 'inputs/test_example/0030.png'),
-        os.path.join(project_root, 'inputs/test_example/0002.png'),
+        os.path.join(script_dir, 'test_images/cat_aigc.jpg'),
+        os.path.join(script_dir, 'test_images/OST_120.png'),
+        os.path.join(project_root, 'inputs/test_example/cat_aigc.jpg'),
         os.path.join(project_root, 'assets/imgsli_1.jpg')
     ]
     

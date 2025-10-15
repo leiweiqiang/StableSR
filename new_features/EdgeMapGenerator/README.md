@@ -117,6 +117,7 @@ edge_map = edge_gen.generate_from_tensor(
 | `test_edge_generator.py` | ~8KB | 完整测试套件 |
 | `test_edge.sh` | ~1KB | 测试快捷脚本 |
 | `test_edge_output.png` | ~34KB | 测试生成的样例edge map |
+| `test_images/` | ~1.2MB | 测试图片目录（2张样例图片） |
 
 ---
 
