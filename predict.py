@@ -21,8 +21,12 @@ from scripts.wavelet_color_fix import (
     wavelet_reconstruction,
     adaptive_instance_normalization,
 )
+from basicsr.utils.edge_utils import EdgeMapGenerator
 
 from cog import BasePredictor, Input, Path
+
+# 创建全局EdgeMapGenerator实例
+edge_generator = EdgeMapGenerator()
 
 
 def generate_edge_map(image_tensor):
@@ -31,43 +35,11 @@ def generate_edge_map(image_tensor):
     :param image_tensor: torch.Tensor of shape (B, C, H, W) in range [-1, 1]
     :return: torch.Tensor of shape (B, 3, H, W) in range [-1, 1]
     """
-    batch_size = image_tensor.size(0)
-    edge_maps = []
-    
-    for i in range(batch_size):
-        # Convert to numpy and normalize to [0, 1]
-        img = (image_tensor[i].cpu().numpy() + 1.0) / 2.0
-        img = np.transpose(img, (1, 2, 0))  # (H, W, C)
-        
-        # Convert to grayscale
-        img_gray = cv2.cvtColor((img * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
-        
-        # Apply Gaussian blur
-        img_blurred = cv2.GaussianBlur(img_gray, (5, 5), 1.4)
-        
-        # Adaptive thresholding for Canny
-        median = np.median(img_blurred)
-        lower_thresh = int(max(0, 0.7 * median))
-        upper_thresh = int(min(255, 1.3 * median))
-        
-        # Apply Canny edge detection
-        edges = cv2.Canny(img_blurred, threshold1=lower_thresh, threshold2=upper_thresh)
-        
-        # Apply morphological operations
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-        
-        # Convert to 3-channel
-        edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
-        
-        # Convert to float and normalize to [-1, 1]
-        edges_rgb = edges_rgb.astype(np.float32) / 255.0
-        edges_rgb = torch.from_numpy(edges_rgb).permute(2, 0, 1)  # (3, H, W)
-        edges_rgb = edges_rgb * 2.0 - 1.0
-        
-        edge_maps.append(edges_rgb)
-    
-    return torch.stack(edge_maps).to(image_tensor.device)
+    return edge_generator.generate_from_tensor(
+        image_tensor, 
+        input_format='RGB', 
+        normalize_range='[-1,1]'
+    )
 
 
 class Predictor(BasePredictor):

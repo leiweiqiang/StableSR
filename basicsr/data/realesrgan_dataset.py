@@ -13,6 +13,7 @@ from basicsr.data.degradations import circular_lowpass_kernel, random_mixed_kern
 from basicsr.data.transforms import augment
 from basicsr.utils import FileClient, get_root_logger, imfrombytes, img2tensor
 from basicsr.utils.registry import DATASET_REGISTRY
+from basicsr.utils.edge_utils import EdgeMapGenerator
 
 @DATASET_REGISTRY.register(suffix='basicsr')
 class RealESRGANDataset(data.Dataset):
@@ -44,6 +45,16 @@ class RealESRGANDataset(data.Dataset):
             self.crop_size = 512
         if 'image_type' not in opt:
             opt['image_type'] = 'png'
+        
+        # 初始化EdgeMapGenerator
+        self.edge_generator = EdgeMapGenerator(
+            gaussian_kernel_size=opt.get('edge_gaussian_kernel_size', (5, 5)),
+            gaussian_sigma=opt.get('edge_gaussian_sigma', 1.4),
+            canny_threshold_lower_factor=opt.get('edge_canny_lower_factor', 0.7),
+            canny_threshold_upper_factor=opt.get('edge_canny_upper_factor', 1.3),
+            morph_kernel_size=opt.get('edge_morph_kernel_size', (3, 3)),
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )
 
         # support multiple type of data: file path and meta data, remove support of lmdb
         self.paths = []
@@ -176,33 +187,12 @@ class RealESRGANDataset(data.Dataset):
             img_gt = img_gt[top:top + crop_pad_size, left:left + crop_pad_size, ...]
 
 # ------------------------ Generate edge map from GT image ------------------------ #
-        # Convert BGR to grayscale for edge detection
-        img_gt_gray = cv2.cvtColor(img_gt, cv2.COLOR_BGR2GRAY)
-        
-        # Convert float32 [0,1] to uint8 [0,255] for Canny edge detection
-        img_gt_gray_uint8 = (img_gt_gray * 255).astype(np.uint8)
-        
-        # Apply stronger Gaussian blur to reduce noise and get cleaner edges
-        img_gt_blurred = cv2.GaussianBlur(img_gt_gray_uint8, (5, 5), 1.4)
-        
-        # Use adaptive Canny edge detector with better thresholds
-        # Calculate adaptive thresholds based on image statistics
-        median = np.median(img_gt_blurred)
-        lower_thresh = int(max(0, 0.7 * median))
-        upper_thresh = int(min(255, 1.3 * median))
-        
-        # Apply Canny edge detector with adaptive thresholds
-        img_edge = cv2.Canny(img_gt_blurred, threshold1=lower_thresh, threshold2=upper_thresh)
-        
-        # Apply morphological operations to clean up the edges
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        img_edge = cv2.morphologyEx(img_edge, cv2.MORPH_CLOSE, kernel)
-        
-        # Convert to 3-channel for consistency
-        img_edge = cv2.cvtColor(img_edge, cv2.COLOR_GRAY2BGR)
-        
-        # Convert back to float32 [0,1] for consistency with the rest of the pipeline
-        img_edge = img_edge.astype(np.float32) / 255.0
+        # 使用EdgeMapGenerator生成边缘图
+        img_edge = self.edge_generator.generate_from_numpy(
+            img_gt, 
+            input_format='BGR', 
+            normalize_input=True
+        )
         # ------------------------ Generate kernels (used in the first degradation) ------------------------ #
         kernel_size = random.choice(self.kernel_range)
         if np.random.uniform() < self.opt['sinc_prob']:

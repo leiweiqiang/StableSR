@@ -64,6 +64,10 @@ from datetime import datetime
 
 # Edge-specific imports
 import cv2
+from basicsr.utils.edge_utils import EdgeMapGenerator
+
+# 创建全局EdgeMapGenerator实例
+edge_generator = EdgeMapGenerator()
 
 
 class Logger(object):
@@ -186,58 +190,13 @@ def generate_edge_map(image_tensor):
 	Note:
 		This function EXACTLY matches the training-time edge map generation
 		in basicsr/data/realesrgan_dataset.py for consistency.
-		
-		Training pipeline (realesrgan_dataset.py lines 178-205):
-		1. Convert BGR to grayscale
-		2. Convert float32 [0,1] to uint8 [0,255]
-		3. Apply Gaussian blur: (5, 5), sigma=1.4
-		4. Adaptive Canny: lower=0.7*median, upper=1.3*median
-		5. Morphological close: MORPH_ELLIPSE (3, 3)
-		6. Convert GRAY to BGR (3 channels)
-		7. Convert back to float32 [0,1]
+		Uses the EdgeMapGenerator class for unified edge generation logic.
 	"""
-	batch_size = image_tensor.size(0)
-	edge_maps = []
-	
-	for i in range(batch_size):
-		# Convert to numpy array [C, H, W] -> [H, W, C]
-		img_np = image_tensor[i].cpu().numpy()
-		img_np = (img_np + 1.0) / 2.0  # Convert from [-1, 1] to [0, 1]
-		img_np = np.clip(img_np, 0, 1)
-		img_np = np.transpose(img_np, (1, 2, 0))  # [C, H, W] -> [H, W, C]
-		
-		# Convert RGB to grayscale (training uses BGR but we have RGB, so use RGB2GRAY)
-		img_gray = cv2.cvtColor((img_np * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
-		
-		# Apply Gaussian blur (EXACTLY as training: kernel=(5,5), sigma=1.4)
-		img_blurred = cv2.GaussianBlur(img_gray, (5, 5), 1.4)
-		
-		# Use adaptive Canny edge detector (EXACTLY as training)
-		median = np.median(img_blurred)
-		lower_thresh = int(max(0, 0.7 * median))
-		upper_thresh = int(min(255, 1.3 * median))
-		edges = cv2.Canny(img_blurred, threshold1=lower_thresh, threshold2=upper_thresh)
-		
-		# Apply morphological operations (EXACTLY as training: MORPH_ELLIPSE (3, 3), MORPH_CLOSE)
-		kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-		edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-		
-		# Convert GRAY to RGB (training converts GRAY to BGR, we convert to RGB)
-		edges_3ch = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
-		
-		# Convert to float32 [0, 1] (EXACTLY as training)
-		edges_float = edges_3ch.astype(np.float32) / 255.0
-		
-		# Convert to tensor [H, W, C] -> [C, H, W]
-		edges_tensor = torch.from_numpy(edges_float).permute(2, 0, 1).float()
-		
-		# Normalize to [-1, 1] (done in training loader: img_edge * 2.0 - 1.0)
-		edges_tensor = edges_tensor * 2.0 - 1.0
-		
-		edge_maps.append(edges_tensor)
-	
-	# Stack all edge maps to [B, C, H, W]
-	return torch.stack(edge_maps).to(image_tensor.device)
+	return edge_generator.generate_from_tensor(
+		image_tensor,
+		input_format='RGB',
+		normalize_range='[-1,1]'
+	)
 
 def generate_edge_map_from_gt(gt_image_path, device):
 	"""

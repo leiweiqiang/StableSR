@@ -19,6 +19,7 @@ S-Lab, Nanyang Technological University
 :star: If StableSR is helpful to your images or projects, please help star this repo. Thanks! :hugs:
 
 ### Update
+- **2025.10.15**: 🔧 **EdgeMapGenerator 重构完成** - 将edge生成代码封装成统一的类，训练和推理使用相同逻辑。查看 [new_features/EdgeMapGenerator/README.md](new_features/EdgeMapGenerator/README.md) 了解详情。
 - **2024.06.28**: Accepted by [IJCV](https://link.springer.com/journal/11263). See the latest [Full paper](https://github.com/IceClear/StableSR/releases/download/UncompressedPDF/StableSR_IJCV_Uncompressed.pdf).
 - **2024.02.29**: Support StableSR with [SD-Turbo](https://huggingface.co/stabilityai/sd-turbo). Thank [Andray](https://github.com/light-and-ray) for the finding!
 
