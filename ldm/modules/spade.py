@@ -90,17 +90,43 @@ class SPADE(nn.Module):
     def forward(self, x_dic, segmap_dic, size=None):
 
         if size is None:
-            segmap = segmap_dic[str(x_dic.size(-1))]
+            target_size = str(x_dic.size(-1))
             x = x_dic
         else:
+            target_size = str(size)
             x = x_dic[str(size)]
-            segmap = segmap_dic[str(size)]
+        
+        # Get segmap, with fallback to nearest available resolution
+        if target_size in segmap_dic:
+            segmap = segmap_dic[target_size]
+        else:
+            # Find the nearest available resolution (prefer smaller resolutions)
+            available_sizes = sorted([int(k) for k in segmap_dic.keys()])
+            target_size_int = int(target_size)
+            
+            # Find closest available size (prefer smaller if equidistant)
+            if target_size_int < available_sizes[0]:
+                # Target is smaller than smallest available, use smallest
+                closest_size = str(available_sizes[0])
+            elif target_size_int > available_sizes[-1]:
+                # Target is larger than largest available, use largest
+                closest_size = str(available_sizes[-1])
+            else:
+                # Find closest size
+                closest_size = str(min(available_sizes, key=lambda x: abs(x - target_size_int)))
+            
+            segmap = segmap_dic[closest_size]
+            # Interpolate to target resolution
+            segmap = F.interpolate(segmap, size=x.size()[2:], mode='bilinear', align_corners=False)
 
         # Part 1. generate parameter-free normalized activations
         normalized = self.param_free_norm(x)
 
         # Part 2. produce scaling and bias conditioned on semantic map
-        # segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
+        # Ensure segmap matches x spatial dimensions
+        if segmap.size(2) != x.size(2) or segmap.size(3) != x.size(3):
+            segmap = F.interpolate(segmap, size=x.size()[2:], mode='bilinear', align_corners=False)
+        
         actv = self.mlp_shared(segmap)
         gamma = self.mlp_gamma(actv)
         beta = self.mlp_beta(actv)

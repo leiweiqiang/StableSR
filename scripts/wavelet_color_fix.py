@@ -109,6 +109,16 @@ def wavelet_reconstruction(content_feat:Tensor, style_feat:Tensor):
     """
     Apply wavelet decomposition, so that the content will have the same color as the style.
     """
+    # Handle resolution mismatch between content and style
+    if content_feat.shape[2:] != style_feat.shape[2:]:
+        # Resize style to match content resolution
+        style_feat = F.interpolate(
+            style_feat,
+            size=content_feat.shape[2:],
+            mode='bilinear',
+            align_corners=False
+        )
+    
     # calculate the wavelet decomposition of the content feature
     content_high_freq, content_low_freq = wavelet_decomposition(content_feat)
     del content_low_freq

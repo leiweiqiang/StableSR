@@ -2,6 +2,21 @@
 # Enhanced inference script with interactive menu
 # This script provides multiple inference modes with parameter persistence
 
+# Activate conda environment
+# Source conda.sh to make conda command available
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/anaconda3/etc/profile.d/conda.sh"
+elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
+    source "/opt/conda/etc/profile.d/conda.sh"
+fi
+
+# Activate sr_edge environment if available
+if command -v conda &> /dev/null; then
+    conda activate sr_edge 2>/dev/null || echo "⚠ Warning: Could not activate sr_edge conda environment"
+fi
+
 # Configuration file for storing default values
 CONFIG_FILE=".inference_defaults.conf"
 
@@ -64,6 +79,8 @@ show_menu() {
     echo "3. 推理指定 checkpoint 文件 (no-edge)"
     echo ""
     echo "4. 生成推理结果报告 (CSV格式)"
+    echo ""
+    echo "5. 推理指定 checkpoint (32->512, 三种模式)"
     echo ""
     echo "0. 退出"
     echo ""
@@ -947,6 +964,396 @@ inference_specific_no_edge() {
     fi
 }
 
+# Function for mode 5: Inference specific checkpoint with all three modes (32->512)
+inference_32_to_512_all_modes() {
+    echo ""
+    echo "=================================================="
+    echo "  模式 5: 推理指定 Checkpoint (32->512, 三种模式)"
+    echo "=================================================="
+    echo ""
+    
+    # Get checkpoint path
+    while true; do
+        CKPT=$(read_with_default "Checkpoint 路径" "$DEFAULT_CKPT")
+        
+        # Validate checkpoint exists
+        if [ ! -f "$CKPT" ]; then
+            echo "❌ 错误：Checkpoint 文件不存在: $CKPT"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ Checkpoint 文件存在"
+            break
+        fi
+    done
+    
+    # Get output directory
+    OUTPUT_DIR=$(read_with_default "输出目录" "$DEFAULT_OUTPUT_BASE")
+    echo "✓ 输出目录: $OUTPUT_DIR"
+    
+    # Get init image path - default to 32x32
+    DEFAULT_INIT_IMG_32="/mnt/nas_dp/test_dataset/32x32_valid_LR"
+    while true; do
+        INIT_IMG=$(read_with_default "输入 LR 图片目录 (32x32)" "$DEFAULT_INIT_IMG_32")
+        
+        if [ ! -d "$INIT_IMG" ]; then
+            echo "❌ 错误：LR 图片目录不存在: $INIT_IMG"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            IMG_COUNT=$(ls -1 "$INIT_IMG" | wc -l)
+            echo "✓ LR 图片目录存在，共 $IMG_COUNT 个文件"
+            break
+        fi
+    done
+    
+    # Get GT image path
+    while true; do
+        GT_IMG=$(read_with_default "GT HR 图片目录 (512x512)" "$DEFAULT_GT_IMG")
+        
+        if [ ! -d "$GT_IMG" ]; then
+            echo "❌ 错误：GT 图片目录不存在: $GT_IMG"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            GT_COUNT=$(ls -1 "$GT_IMG" | wc -l)
+            echo "✓ GT 图片目录存在，共 $GT_COUNT 个文件"
+            break
+        fi
+    done
+    
+    # Get config file path
+    while true; do
+        CONFIG_PATH=$(read_with_default "Config 文件路径" "$DEFAULT_CONFIG")
+        
+        if [ ! -f "$CONFIG_PATH" ]; then
+            echo "❌ 错误：Config 文件不存在: $CONFIG_PATH"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ Config 文件存在"
+            break
+        fi
+    done
+    
+    # Get VQGAN checkpoint path
+    while true; do
+        VQGAN_PATH=$(read_with_default "VQGAN Checkpoint 路径" "$DEFAULT_VQGAN_CKPT")
+        
+        if [ ! -f "$VQGAN_PATH" ]; then
+            echo "❌ 错误：VQGAN Checkpoint 文件不存在: $VQGAN_PATH"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ VQGAN Checkpoint 文件存在"
+            break
+        fi
+    done
+    
+    # Get max images
+    MAX_IMAGES=$(read_with_default "最大推理图片数量 (-1=全部)" "$DEFAULT_MAX_IMAGES")
+    echo "✓ 推理图片数量: $MAX_IMAGES"
+    
+    # Save as new defaults
+    DEFAULT_CKPT="$CKPT"
+    DEFAULT_OUTPUT_BASE="$OUTPUT_DIR"
+    DEFAULT_INIT_IMG="$INIT_IMG"
+    DEFAULT_GT_IMG="$GT_IMG"
+    DEFAULT_MAX_IMAGES="$MAX_IMAGES"
+    DEFAULT_CONFIG="$CONFIG_PATH"
+    DEFAULT_VQGAN_CKPT="$VQGAN_PATH"
+    save_defaults
+    
+    # Extract experiment name from checkpoint path for output naming
+    EXP_NAME=$(basename $(dirname $(dirname "$CKPT")))
+    CKPT_NAME=$(basename "$CKPT" .ckpt)
+    BASE_OUTPUT="$OUTPUT_DIR/${EXP_NAME}_${CKPT_NAME}_32to512"
+    
+    echo ""
+    echo "将运行三种推理模式："
+    echo "  1. Edge 模式 (真实边缘)"
+    echo "  2. No-Edge 模式 (黑色边缘)"
+    echo "  3. Dummy-Edge 模式 (固定边缘)"
+    echo ""
+    
+    # Mode 1: Edge mode
+    echo "=================================================="
+    echo "正在运行 EDGE 模式推理..."
+    echo "=================================================="
+    echo ""
+    
+    EDGE_OUTPUT="$BASE_OUTPUT/edge"
+    
+    # Check if inference results already exist
+    if [ -d "$EDGE_OUTPUT" ]; then
+        PNG_COUNT=$(find "$EDGE_OUTPUT" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+        if [ "$PNG_COUNT" -gt 0 ]; then
+            echo "✓ 推理结果已存在 ($PNG_COUNT 张图片)，跳过推理"
+            EDGE_STATUS=0
+        else
+            PNG_COUNT=0
+        fi
+    else
+        PNG_COUNT=0
+    fi
+    
+    # Run inference if no results exist
+    if [ "$PNG_COUNT" -eq 0 ]; then
+        python scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py \
+            --config "$CONFIG_PATH" \
+            --ckpt "$CKPT" \
+            --init-img "$INIT_IMG" \
+            --gt-img "$GT_IMG" \
+            --outdir "$EDGE_OUTPUT" \
+            --ddpm_steps $DDPM_STEPS \
+            --dec_w $DEC_W \
+            --seed $SEED \
+            --n_samples $N_SAMPLES \
+            --vqgan_ckpt "$VQGAN_PATH" \
+            --colorfix_type "$COLORFIX_TYPE" \
+            --max_images $MAX_IMAGES \
+            --use_edge_processing
+        
+        EDGE_STATUS=$?
+        
+        if [ $EDGE_STATUS -eq 0 ]; then
+            echo ""
+            echo "✓ EDGE 模式推理完成"
+            echo "  输出位置: $EDGE_OUTPUT"
+        else
+            echo ""
+            echo "❌ EDGE 模式推理失败"
+        fi
+    fi
+    
+    # Calculate metrics if inference succeeded or results exist
+    if [ $EDGE_STATUS -eq 0 ]; then
+        echo "  正在计算指标..."
+        python scripts/calculate_metrics_standalone.py \
+            --output_dir "$EDGE_OUTPUT" \
+            --gt_dir "$GT_IMG" \
+            --crop_border 0
+        echo "  ✓ 指标计算完成: $EDGE_OUTPUT/metrics.json"
+    fi
+    
+    echo ""
+    
+    # Mode 2: No-Edge mode
+    echo "=================================================="
+    echo "正在运行 NO-EDGE 模式推理（使用黑色边缘图）..."
+    echo "=================================================="
+    echo ""
+    
+    NO_EDGE_OUTPUT="$BASE_OUTPUT/no_edge"
+    
+    # Check if inference results already exist
+    if [ -d "$NO_EDGE_OUTPUT" ]; then
+        PNG_COUNT=$(find "$NO_EDGE_OUTPUT" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+        if [ "$PNG_COUNT" -gt 0 ]; then
+            echo "✓ 推理结果已存在 ($PNG_COUNT 张图片)，跳过推理"
+            NO_EDGE_STATUS=0
+        else
+            PNG_COUNT=0
+        fi
+    else
+        PNG_COUNT=0
+    fi
+    
+    # Run inference if no results exist
+    if [ "$PNG_COUNT" -eq 0 ]; then
+        python scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py \
+            --config "$CONFIG_PATH" \
+            --ckpt "$CKPT" \
+            --init-img "$INIT_IMG" \
+            --gt-img "$GT_IMG" \
+            --outdir "$NO_EDGE_OUTPUT" \
+            --ddpm_steps $DDPM_STEPS \
+            --dec_w $DEC_W \
+            --seed $SEED \
+            --n_samples $N_SAMPLES \
+            --vqgan_ckpt "$VQGAN_PATH" \
+            --colorfix_type "$COLORFIX_TYPE" \
+            --max_images $MAX_IMAGES \
+            --use_edge_processing \
+            --use_white_edge
+        
+        NO_EDGE_STATUS=$?
+        
+        if [ $NO_EDGE_STATUS -eq 0 ]; then
+            echo ""
+            echo "✓ NO-EDGE 模式推理完成"
+            echo "  输出位置: $NO_EDGE_OUTPUT"
+        else
+            echo ""
+            echo "❌ NO-EDGE 模式推理失败"
+        fi
+    fi
+    
+    # Calculate metrics if inference succeeded or results exist
+    if [ $NO_EDGE_STATUS -eq 0 ]; then
+        echo "  正在计算指标..."
+        python scripts/calculate_metrics_standalone.py \
+            --output_dir "$NO_EDGE_OUTPUT" \
+            --gt_dir "$GT_IMG" \
+            --crop_border 0
+        echo "  ✓ 指标计算完成: $NO_EDGE_OUTPUT/metrics.json"
+    fi
+    
+    echo ""
+    
+    # Mode 3: Dummy-Edge mode
+    echo "=================================================="
+    echo "正在运行 DUMMY-EDGE 模式推理（使用固定dummy edge图）..."
+    echo "=================================================="
+    echo ""
+    
+    DUMMY_EDGE_OUTPUT="$BASE_OUTPUT/dummy_edge"
+    DUMMY_EDGE_PATH="/stablesr_dataset/default_edge.png"
+    
+    # Check if inference results already exist
+    if [ -d "$DUMMY_EDGE_OUTPUT" ]; then
+        PNG_COUNT=$(find "$DUMMY_EDGE_OUTPUT" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+        if [ "$PNG_COUNT" -gt 0 ]; then
+            echo "✓ 推理结果已存在 ($PNG_COUNT 张图片)，跳过推理"
+            DUMMY_EDGE_STATUS=0
+        else
+            PNG_COUNT=0
+        fi
+    else
+        PNG_COUNT=0
+    fi
+    
+    # Run inference if no results exist
+    if [ "$PNG_COUNT" -eq 0 ]; then
+        python scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py \
+            --config "$CONFIG_PATH" \
+            --ckpt "$CKPT" \
+            --init-img "$INIT_IMG" \
+            --gt-img "$GT_IMG" \
+            --outdir "$DUMMY_EDGE_OUTPUT" \
+            --ddpm_steps $DDPM_STEPS \
+            --dec_w $DEC_W \
+            --seed $SEED \
+            --n_samples $N_SAMPLES \
+            --vqgan_ckpt "$VQGAN_PATH" \
+            --colorfix_type "$COLORFIX_TYPE" \
+            --max_images $MAX_IMAGES \
+            --use_edge_processing \
+            --use_dummy_edge \
+            --dummy_edge_path "$DUMMY_EDGE_PATH"
+        
+        DUMMY_EDGE_STATUS=$?
+        
+        if [ $DUMMY_EDGE_STATUS -eq 0 ]; then
+            echo ""
+            echo "✓ DUMMY-EDGE 模式推理完成"
+            echo "  输出位置: $DUMMY_EDGE_OUTPUT"
+        else
+            echo ""
+            echo "❌ DUMMY-EDGE 模式推理失败"
+        fi
+    fi
+    
+    # Calculate metrics if inference succeeded or results exist
+    if [ $DUMMY_EDGE_STATUS -eq 0 ]; then
+        echo "  正在计算指标..."
+        python scripts/calculate_metrics_standalone.py \
+            --output_dir "$DUMMY_EDGE_OUTPUT" \
+            --gt_dir "$GT_IMG" \
+            --crop_border 0
+        echo "  ✓ 指标计算完成: $DUMMY_EDGE_OUTPUT/metrics.json"
+    fi
+    
+    echo ""
+    echo "=================================================="
+    echo "  三种模式推理完成！"
+    echo "=================================================="
+    echo ""
+    
+    # Show summary
+    echo "推理结果总结："
+    if [ $EDGE_STATUS -eq 0 ]; then
+        echo "  ✓ EDGE 模式: 完成"
+    else
+        echo "  ❌ EDGE 模式: 失败"
+    fi
+    
+    if [ $NO_EDGE_STATUS -eq 0 ]; then
+        echo "  ✓ NO-EDGE 模式: 完成"
+    else
+        echo "  ❌ NO-EDGE 模式: 失败"
+    fi
+    
+    if [ $DUMMY_EDGE_STATUS -eq 0 ]; then
+        echo "  ✓ DUMMY-EDGE 模式: 完成"
+    else
+        echo "  ❌ DUMMY-EDGE 模式: 失败"
+    fi
+    
+    echo ""
+    echo "所有结果保存在: $BASE_OUTPUT"
+    echo ""
+    
+    # Generate CSV report
+    echo "=================================================="
+    echo "正在生成推理结果报告..."
+    echo "=================================================="
+    echo ""
+    
+    # Check if Python script exists
+    PYTHON_SCRIPT="scripts/generate_metrics_report.py"
+    if [ -f "$PYTHON_SCRIPT" ]; then
+        echo "正在扫描推理结果目录: $BASE_OUTPUT"
+        python3 "$PYTHON_SCRIPT" "$BASE_OUTPUT"
+        
+        # Display report location
+        DIR_NAME=$(basename "$BASE_OUTPUT")
+        OUTPUT_REPORT="$BASE_OUTPUT/${DIR_NAME}_inference_report.csv"
+        
+        if [ -f "$OUTPUT_REPORT" ]; then
+            # Add footer with timestamp (3 lines)
+            echo "" >> "$OUTPUT_REPORT"
+            echo "" >> "$OUTPUT_REPORT"
+            echo "$(date '+%a %b %d')" >> "$OUTPUT_REPORT"
+            echo "$(date '+%T')" >> "$OUTPUT_REPORT"
+            echo "$(date '+%Z %Y')" >> "$OUTPUT_REPORT"
+            
+            echo ""
+            echo "===================================================="
+            echo "✓ 推理结果报告已生成"
+            echo "  报告位置: $OUTPUT_REPORT"
+            echo "===================================================="
+            echo ""
+            
+            # Show preview of the report
+            echo "报告预览（前10行）："
+            head -11 "$OUTPUT_REPORT" | column -t -s ','
+            echo ""
+            
+            echo "报告尾部信息："
+            tail -5 "$OUTPUT_REPORT"
+            echo ""
+        else
+            echo "⚠ 报告文件未生成"
+            echo ""
+        fi
+    else
+        echo "⚠ 找不到报告生成脚本: $PYTHON_SCRIPT"
+        echo "跳过报告生成"
+        echo ""
+    fi
+}
+
 # Function for mode 4: Generate report
 generate_report() {
     echo ""
@@ -956,7 +1363,7 @@ generate_report() {
     echo ""
     
     # Find latest directory in /logs
-    LOGS_BASE_DIR="/root/dp/StableSR_Edge_v2_loss/logs"
+    LOGS_BASE_DIR="./logs"
     
     if [ -d "$LOGS_BASE_DIR" ]; then
         # Get list of directories (excluding child_runs) sorted by modification time
@@ -1070,7 +1477,7 @@ main() {
     
     # Main menu - execute once and exit
     show_menu
-    read -p "请选择 [0-4]: " choice
+    read -p "请选择 [0-5]: " choice
     
     case $choice in
         1)
@@ -1085,6 +1492,9 @@ main() {
         4)
             generate_report
             ;;
+        5)
+            inference_32_to_512_all_modes
+            ;;
         0)
             echo ""
             echo "退出中..."
@@ -1092,7 +1502,7 @@ main() {
             ;;
         *)
             echo ""
-            echo "无效选项，请选择 0-4。"
+            echo "无效选项，请选择 0-5。"
             exit 1
             ;;
     esac

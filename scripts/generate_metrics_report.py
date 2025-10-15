@@ -8,6 +8,7 @@ and generates a comprehensive CSV report matching the table format.
 import os
 import json
 import csv
+import re
 import argparse
 from pathlib import Path
 from collections import defaultdict
@@ -28,13 +29,34 @@ def extract_path_info(file_path, results_base_path):
     rel_path = os.path.relpath(file_path, results_base_path)
     path_parts = rel_path.split(os.sep)
     
-    if len(path_parts) < 3:
+    # Handle two formats:
+    # Format 1: edge_type/epochs_N/metrics.json (len=3, used in mode 1)
+    # Format 2: edge_type/metrics.json (len=2, used in mode 5)
+    
+    if len(path_parts) == 3:
+        # Format 1: edge/epochs_666/metrics.json
+        edge_type = path_parts[-3]  # edge or no_edge
+        epoch_dir = path_parts[-2]  # epochs_47, epochs_95, etc.
+        return edge_type, epoch_dir
+    elif len(path_parts) == 2:
+        # Format 2: edge/metrics.json
+        # Extract epoch from parent directory name
+        edge_type = path_parts[-2]  # edge, no_edge, or dummy_edge
+        
+        # Try to extract epoch from parent directory name
+        # e.g., "2025-10-14T21-55-46_stablesr_edge_loss_20251014_215543_epoch=000666_32to512"
+        parent_dir = os.path.basename(results_base_path)
+        epoch_match = re.search(r'epoch[=_](\d+)', parent_dir)
+        if epoch_match:
+            epoch_num = epoch_match.group(1)
+            epoch_dir = f"epochs_{epoch_num}"
+        else:
+            # If no epoch found, use a generic name
+            epoch_dir = "epochs_custom"
+        
+        return edge_type, epoch_dir
+    else:
         return None, None
-    
-    edge_type = path_parts[-3]  # edge or no_edge
-    epoch_dir = path_parts[-2]  # epochs_47, epochs_95, etc.
-    
-    return edge_type, epoch_dir
 
 def get_column_name(edge_type, epoch_dir):
     """Get the column name based on edge type and epoch directory."""
@@ -144,42 +166,35 @@ def format_value(value):
     except (ValueError, TypeError):
         return str(value)
 
+def sort_column_by_epoch(column_name):
+    """
+    Extract epoch number for sorting columns by epoch order.
+    Returns tuple: (is_stablesr, epoch_num, edge_type_order)
+    """
+    if column_name == "StableSR":
+        return (0, 0, 0)  # StableSR comes first
+    
+    # Extract epoch number
+    match = re.search(r'Epoch (\d+)', column_name)
+    if not match:
+        return (2, 999999, 0)  # Unknown format goes last
+    
+    epoch_num = int(match.group(1))
+    
+    # Define edge type order: edge -> no edge -> dummy edge
+    if "(edge)" in column_name and "(no edge)" not in column_name and "(dummy edge)" not in column_name:
+        edge_order = 0
+    elif "(no edge)" in column_name:
+        edge_order = 1
+    elif "(dummy edge)" in column_name:
+        edge_order = 2
+    else:
+        edge_order = 3
+    
+    return (1, epoch_num, edge_order)
+
 def generate_csv_report(metrics_data, image_files, output_path):
     """Generate the final CSV report."""
-    
-    # Define column order (based on the image format)
-    # For each epoch: edge → no edge → dummy edge
-    column_order = [
-        "StableSR",
-        # Epoch 47
-        "Epoch 47 (edge)",
-        "Epoch 47 (no edge)",
-        "Epoch 47 (dummy edge)",
-        # Epoch 95
-        "Epoch 95 (edge)", 
-        "Epoch 95 (no edge)",
-        "Epoch 95 (dummy edge)",
-        # Epoch 142
-        "Epoch 142 (edge)",
-        "Epoch 142 (no edge)",
-        "Epoch 142 (dummy edge)",
-        # Epoch 143
-        "Epoch 143 (edge)",
-        "Epoch 143 (no edge)",
-        "Epoch 143 (dummy edge)",
-        # Epoch 190
-        "Epoch 190 (edge)",
-        "Epoch 190 (no edge)",
-        "Epoch 190 (dummy edge)",
-        # Epoch 238
-        "Epoch 238 (edge)",
-        "Epoch 238 (no edge)",
-        "Epoch 238 (dummy edge)",
-        # Epoch 285
-        "Epoch 285 (edge)",
-        "Epoch 285 (no edge)",
-        "Epoch 285 (dummy edge)"
-    ]
     
     # Find columns that actually have data
     columns_with_data = set()
@@ -204,13 +219,8 @@ def generate_csv_report(metrics_data, image_files, output_path):
             if has_data:
                 columns_with_data.add(column)
     
-    # Build final column list based on predefined order, only including columns with data
-    final_columns = []
-    for col in column_order:
-        if col in columns_with_data:
-            final_columns.append(col)
-            columns_with_data.remove(col)
-    final_columns.extend(sorted(columns_with_data))
+    # Sort columns by epoch number and edge type
+    final_columns = sorted(columns_with_data, key=sort_column_by_epoch)
     
     # Create two-row header structure
     def create_header_rows():

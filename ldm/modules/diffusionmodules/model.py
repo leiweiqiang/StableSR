@@ -827,6 +827,15 @@ class Fuse_sft_block_RRDB(nn.Module):
         self.encode_enc_3 = ResBlock(in_ch, out_ch)
 
     def forward(self, enc_feat, dec_feat, w=1):
+        # Handle spatial resolution mismatch between encoder and decoder features
+        if enc_feat.shape[2] != dec_feat.shape[2] or enc_feat.shape[3] != dec_feat.shape[3]:
+            enc_feat = torch.nn.functional.interpolate(
+                enc_feat, 
+                size=(dec_feat.shape[2], dec_feat.shape[3]), 
+                mode='bilinear', 
+                align_corners=False
+            )
+        
         enc_feat = self.encode_enc_1(torch.cat([enc_feat, dec_feat], dim=1))
         enc_feat = self.encode_enc_2(enc_feat)
         enc_feat = self.encode_enc_3(enc_feat)
