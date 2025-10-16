@@ -1370,15 +1370,17 @@ class EdgeMapProcessor(nn.Module):
         self.to_four = nn.Conv2d(128, 4, kernel_size=1, bias=True)
 
         self.pool = nn.AdaptiveAvgPool2d((64, 64))
+        self.merge = nn.Conv2d(8, 4, kernel_size=1, bias=True)
 
-    def forward(self, x):
+    def forward(self, edge_map, x):
         """
         x: (B, 3, H, W)
         return: (B, 4, 64, 64)
         """
-        feat = self.backbone(x)          # (B, 128, H', W')
+        feat = self.backbone(edge_map)          # (B, 128, H', W')
         feat4 = self.to_four(feat)       # (B, 4,   H', W')
         out = self.pool(feat4)           # (B, 4,   64, 64)
+        out = self.merge(th.cat([out, x], dim=1))
         return out
 
 class EncoderUNetModelWT(nn.Module):
@@ -1562,20 +1564,21 @@ class EncoderUNetModelWT(nn.Module):
     def forward(self, x, edge_map, timesteps):
         """
         Apply the model to an input batch.
-        :param x: an [N x C x ...] Tensor of inputs.
+        :param x: an [N x 4 x 64 * 64] Tensor of inputs.
         :param edge_map: an [N x 3 x H x W] Tensor of edge maps.
         :param timesteps: a 1-D batch of timesteps.
         :return: an [N x K] Tensor of outputs.
         """
         # Process edge map to get 4-channel features
-        edge_feat = self.edge_processor(edge_map)  # (N, 4, 64, 64)
+        edge_feat = self.edge_processor(edge_map=edge_map, x=x)  # (N, 4, 64, 64)
         
         # Resize edge features to match the latent spatial size
-        if edge_feat.size(-1) != x.size(-1) or edge_feat.size(-2) != x.size(-2):
-            edge_feat = F.interpolate(edge_feat, size=(x.size(-2), x.size(-1)), mode='bilinear', align_corners=False)
+        # if edge_feat.size(-1) != x.size(-1) or edge_feat.size(-2) != x.size(-2):
+        #    edge_feat = F.interpolate(edge_feat, size=(x.size(-2), x.size(-1)), mode='bilinear', align_corners=False)
         
         # Concatenate x and edge features
-        h_input = th.cat([x, edge_feat], dim=1)  # (N, 8, H, W)
+        # h_input = th.cat([x, edge_feat], dim=1)  # (N, 8, H, W)
+        h_input = edge_feat
         
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 

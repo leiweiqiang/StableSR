@@ -82,7 +82,7 @@ model:
       target: ldm.modules.diffusionmodules.openaimodel.EncoderUNetModelWT
       params:
         image_size: 96
-        in_channels: 8
+        in_channels: 4
         model_channels: 256
         out_channels: 256
         num_res_blocks: 2
@@ -232,7 +232,7 @@ test_data:
 lightning:
   modelcheckpoint:
     params:
-      every_n_train_steps: 500
+      every_n_train_steps: 250
   callbacks:
     image_logger:
       target: main.ImageLogger
