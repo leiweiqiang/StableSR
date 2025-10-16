@@ -637,31 +637,43 @@ inference_all_checkpoints() {
         echo "   每个GPU将处理约 $((($EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
         echo ""
         
-        # Pure bash parallel execution
-        RUNNING_JOBS=0
+        # Pure bash parallel execution - batch processing
+        JOB_COUNT=0
+        PIDS=()
+        
         while IFS='|' read -r CKPT_PATH GPU_ID TASK_IDX; do
-            # Wait if we've reached the max number of parallel jobs
-            while [ "$RUNNING_JOBS" -ge "$NUM_THREADS" ]; do
-                wait -n
-                ((RUNNING_JOBS--))
-            done
-            
-            # Start a new background job
+            # Start background job
             (
-                # Add staggered start delay
+                # Add small staggered start delay
                 if [ -n "$TASK_IDX" ] && [ "$TASK_IDX" -gt 0 ]; then
-                    sleep $(echo "scale=2; $TASK_IDX * 0.5" | bc 2>/dev/null || echo "0")
+                    sleep $(awk "BEGIN {print $TASK_IDX * 0.2}")
                 fi
                 
                 process_single_inference "$CKPT_PATH" "edge" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
                     "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "$ENABLE_METRICS_RECALC" "" "$GPU_ID"
             ) &
             
-            ((RUNNING_JOBS++))
+            PIDS+=($!)
+            ((JOB_COUNT++))
+            
+            # When we reach the batch size, wait for all jobs in this batch to complete
+            if [ "$JOB_COUNT" -ge "$NUM_THREADS" ]; then
+                echo "  等待批次完成 ($JOB_COUNT 个任务)..."
+                for pid in "${PIDS[@]}"; do
+                    wait $pid 2>/dev/null
+                done
+                PIDS=()
+                JOB_COUNT=0
+            fi
         done < "$EDGE_TASK_FILE"
         
-        # Wait for all remaining jobs to finish
-        wait
+        # Wait for any remaining jobs
+        if [ ${#PIDS[@]} -gt 0 ]; then
+            echo "  等待最后一批完成 (${#PIDS[@]} 个任务)..."
+            for pid in "${PIDS[@]}"; do
+                wait $pid 2>/dev/null
+            done
+        fi
     else
         echo "没有需要处理的任务"
     fi
@@ -725,31 +737,43 @@ inference_all_checkpoints() {
         echo "   每个GPU将处理约 $((($NO_EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
         echo ""
         
-        # Pure bash parallel execution
-        RUNNING_JOBS=0
+        # Pure bash parallel execution - batch processing
+        JOB_COUNT=0
+        PIDS=()
+        
         while IFS='|' read -r CKPT_PATH GPU_ID TASK_IDX; do
-            # Wait if we've reached the max number of parallel jobs
-            while [ "$RUNNING_JOBS" -ge "$NUM_THREADS" ]; do
-                wait -n
-                ((RUNNING_JOBS--))
-            done
-            
-            # Start a new background job
+            # Start background job
             (
-                # Add staggered start delay
+                # Add small staggered start delay
                 if [ -n "$TASK_IDX" ] && [ "$TASK_IDX" -gt 0 ]; then
-                    sleep $(echo "scale=2; $TASK_IDX * 0.5" | bc 2>/dev/null || echo "0")
+                    sleep $(awk "BEGIN {print $TASK_IDX * 0.2}")
                 fi
                 
                 process_single_inference "$CKPT_PATH" "no_edge" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
                     "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "$ENABLE_METRICS_RECALC" "" "$GPU_ID"
             ) &
             
-            ((RUNNING_JOBS++))
+            PIDS+=($!)
+            ((JOB_COUNT++))
+            
+            # When we reach the batch size, wait for all jobs in this batch to complete
+            if [ "$JOB_COUNT" -ge "$NUM_THREADS" ]; then
+                echo "  等待批次完成 ($JOB_COUNT 个任务)..."
+                for pid in "${PIDS[@]}"; do
+                    wait $pid 2>/dev/null
+                done
+                PIDS=()
+                JOB_COUNT=0
+            fi
         done < "$NO_EDGE_TASK_FILE"
         
-        # Wait for all remaining jobs to finish
-        wait
+        # Wait for any remaining jobs
+        if [ ${#PIDS[@]} -gt 0 ]; then
+            echo "  等待最后一批完成 (${#PIDS[@]} 个任务)..."
+            for pid in "${PIDS[@]}"; do
+                wait $pid 2>/dev/null
+            done
+        fi
     else
         echo "没有需要处理的任务"
     fi
@@ -814,31 +838,43 @@ inference_all_checkpoints() {
         echo "   每个GPU将处理约 $((($DUMMY_EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
         echo ""
         
-        # Pure bash parallel execution
-        RUNNING_JOBS=0
+        # Pure bash parallel execution - batch processing
+        JOB_COUNT=0
+        PIDS=()
+        
         while IFS='|' read -r CKPT_PATH GPU_ID TASK_IDX; do
-            # Wait if we've reached the max number of parallel jobs
-            while [ "$RUNNING_JOBS" -ge "$NUM_THREADS" ]; do
-                wait -n
-                ((RUNNING_JOBS--))
-            done
-            
-            # Start a new background job
+            # Start background job
             (
-                # Add staggered start delay
+                # Add small staggered start delay
                 if [ -n "$TASK_IDX" ] && [ "$TASK_IDX" -gt 0 ]; then
-                    sleep $(echo "scale=2; $TASK_IDX * 0.5" | bc 2>/dev/null || echo "0")
+                    sleep $(awk "BEGIN {print $TASK_IDX * 0.2}")
                 fi
                 
                 process_single_inference "$CKPT_PATH" "dummy_edge" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
                     "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "$ENABLE_METRICS_RECALC" "$DUMMY_EDGE_PATH" "$GPU_ID"
             ) &
             
-            ((RUNNING_JOBS++))
+            PIDS+=($!)
+            ((JOB_COUNT++))
+            
+            # When we reach the batch size, wait for all jobs in this batch to complete
+            if [ "$JOB_COUNT" -ge "$NUM_THREADS" ]; then
+                echo "  等待批次完成 ($JOB_COUNT 个任务)..."
+                for pid in "${PIDS[@]}"; do
+                    wait $pid 2>/dev/null
+                done
+                PIDS=()
+                JOB_COUNT=0
+            fi
         done < "$DUMMY_EDGE_TASK_FILE"
         
-        # Wait for all remaining jobs to finish
-        wait
+        # Wait for any remaining jobs
+        if [ ${#PIDS[@]} -gt 0 ]; then
+            echo "  等待最后一批完成 (${#PIDS[@]} 个任务)..."
+            for pid in "${PIDS[@]}"; do
+                wait $pid 2>/dev/null
+            done
+        fi
     else
         echo "没有需要处理的任务"
     fi
