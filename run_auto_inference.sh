@@ -43,7 +43,7 @@ EOF
 export LOGS_DIR="logs"
 export CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_800.yaml"
 export VQGAN_CKPT="/stablesr_dataset/checkpoints/vqgan_cfw_00011.ckpt"
-export DDPM_STEPS=2
+export DDPM_STEPS=200
 export DEC_W=0
 export SEED=42
 export N_SAMPLES=1
@@ -1036,6 +1036,89 @@ inference_all_checkpoints() {
     echo "===================================================="
     echo ""
     
+    # Create comparison grids for each processed checkpoint
+    echo ""
+    echo "===================================================="
+    echo "  生成对比拼接图"
+    echo "===================================================="
+    echo ""
+    
+    # Auto-discover all epochs that have complete results (edge, no_edge, dummy_edge)
+    # This ensures comparison grids are generated even if inference was skipped
+    echo "正在扫描已有的推理结果..."
+    
+    EPOCHS_TO_COMPARE=()
+    EDGE_BASE_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/edge"
+    
+    if [ -d "$EDGE_BASE_DIR" ]; then
+        # Find all epochs_* directories
+        for edge_epoch_dir in "$EDGE_BASE_DIR"/epochs_*; do
+            if [ -d "$edge_epoch_dir" ]; then
+                # Extract epoch number from directory name
+                dir_name=$(basename "$edge_epoch_dir")
+                epoch_num="${dir_name#epochs_}"
+                
+                # Check if all three modes exist
+                NO_EDGE_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/no_edge/epochs_$epoch_num"
+                DUMMY_EDGE_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/dummy_edge/epochs_$epoch_num"
+                
+                if [ -d "$NO_EDGE_DIR" ] && [ -d "$DUMMY_EDGE_DIR" ]; then
+                    # Check if images exist in edge directory
+                    IMG_COUNT=$(find "$edge_epoch_dir" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+                    if [ "$IMG_COUNT" -gt 0 ]; then
+                        EPOCHS_TO_COMPARE+=("$epoch_num")
+                    fi
+                fi
+            fi
+        done
+    fi
+    
+    if [ ${#EPOCHS_TO_COMPARE[@]} -gt 0 ]; then
+        echo "✓ 找到 ${#EPOCHS_TO_COMPARE[@]} 个epoch需要生成对比图"
+        echo ""
+        
+        COMPARISON_SUCCESS=0
+        COMPARISON_TOTAL=0
+        
+        for epoch in "${EPOCHS_TO_COMPARE[@]}"; do
+            ((COMPARISON_TOTAL++))
+            
+            # Check if comparison already exists
+            COMPARISON_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/comparisons/epochs_$epoch"
+            if [ -d "$COMPARISON_DIR" ]; then
+                COMP_COUNT=$(find "$COMPARISON_DIR" -maxdepth 1 -name "*_comparison.png" -type f 2>/dev/null | wc -l)
+                if [ "$COMP_COUNT" -gt 0 ]; then
+                    echo "✓ epoch=$epoch 对比图已存在，跳过"
+                    ((COMPARISON_SUCCESS++))
+                    continue
+                fi
+            fi
+            
+            echo "→ 生成 epoch=$epoch 的对比图..."
+            
+            python scripts/create_comparison_grid.py \
+                "$OUTPUT_BASE/$SELECTED_DIR_NAME" \
+                "$DEFAULT_GT_IMG" \
+                "$epoch" 2>&1 | while IFS= read -r line; do echo "  $line"; done
+            
+            if [ ${PIPESTATUS[0]} -eq 0 ]; then
+                ((COMPARISON_SUCCESS++))
+                echo "  ✓ epoch=$epoch 对比图生成完成"
+            else
+                echo "  ⚠ epoch=$epoch 对比图生成失败"
+            fi
+            echo ""
+        done
+        
+        echo "===================================================="
+        echo "对比图生成完成: $COMPARISON_SUCCESS/$COMPARISON_TOTAL"
+        echo "===================================================="
+        echo ""
+    else
+        echo "⚠ 没有找到需要生成对比图的epoch"
+        echo ""
+    fi
+    
     # Show statistics
     echo "统计信息："
     echo "  EDGE 模式: 已处理 $EDGE_PROCESSED 个 checkpoints，跳过 $EDGE_SKIPPED 个"
@@ -1505,6 +1588,30 @@ inference_specific_checkpoint() {
     echo ""
     echo "所有指标（PSNR, SSIM, LPIPS, Edge PSNR, Edge Overlap）已自动计算"
     echo ""
+    
+    # Generate comparison grids
+    if [ $EDGE_SUCCESS -eq 0 ] && [ $NO_EDGE_SUCCESS -eq 0 ] && [ $DUMMY_SUCCESS -eq 0 ]; then
+        echo ""
+        echo "===================================================="
+        echo "  生成对比拼接图"
+        echo "===================================================="
+        echo ""
+        
+        python scripts/create_comparison_grid.py \
+            "$BASE_OUTPUT" \
+            "$GT_IMG" \
+            "$EPOCH_NUM"
+        
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo "✓ 对比拼接图已生成"
+            echo "  输出: $BASE_OUTPUT/comparisons/epochs_$((10#$EPOCH_NUM))/"
+        else
+            echo ""
+            echo "⚠ 对比拼接图生成失败"
+        fi
+        echo ""
+    fi
     
     # Ask if generate comprehensive report
     read -p "是否生成综合报告? (y/n) [y]: " GEN_REPORT
