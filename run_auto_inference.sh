@@ -39,16 +39,16 @@ EOF
     echo "✓ 默认参数已保存"
 }
 
-# Other fixed parameters
-LOGS_DIR="logs"
-CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_800.yaml"
-VQGAN_CKPT="/stablesr_dataset/checkpoints/vqgan_cfw_00011.ckpt"
-DDPM_STEPS=200
-DEC_W=0.5
-SEED=42
-N_SAMPLES=1
-COLORFIX_TYPE="wavelet"
-INPUT_SIZE=512  # LR input size - must match training (resize_lq=True resizes LR to GT size)
+# Other fixed parameters - export them so they can be used in parallel processes
+export LOGS_DIR="logs"
+export CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_800.yaml"
+export VQGAN_CKPT="/stablesr_dataset/checkpoints/vqgan_cfw_00011.ckpt"
+export DDPM_STEPS=1000
+export DEC_W=0
+export SEED=42
+export N_SAMPLES=1
+export COLORFIX_TYPE="wavelet"
+export INPUT_SIZE=512  # LR input size - must match training (resize_lq=True resizes LR to GT size)
 
 # Function to display menu
 show_menu() {
@@ -83,6 +83,106 @@ read_with_default() {
     
     echo "$result"
 }
+
+# Function to process a single checkpoint inference task
+process_single_inference() {
+    local CKPT_FILE="$1"
+    local MODE="$2"
+    local USER_LOGS_DIR="$3"
+    local OUTPUT_BASE="$4"
+    local SELECTED_DIR_NAME="$5"
+    local INIT_IMG="$6"
+    local GT_IMG="$7"
+    local CONFIG="$8"
+    local VQGAN_CKPT="$9"
+    local ENABLE_METRICS_RECALC="${10}"
+    local DUMMY_EDGE_PATH="${11:-}"
+    
+    # Extract epoch number
+    CKPT_BASENAME=$(basename "$CKPT_FILE")
+    if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+        EPOCH_NUM="${BASH_REMATCH[1]}"
+    else
+        echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME" >&2
+        return 1
+    fi
+    
+    # Determine subfolder and flags based on mode
+    case "$MODE" in
+        edge)
+            SUB_FOLDER="edge"
+            EDGE_FLAGS="--use_edge_processing"
+            ;;
+        no_edge)
+            SUB_FOLDER="no_edge"
+            EDGE_FLAGS="--use_edge_processing --use_white_edge"
+            ;;
+        dummy_edge)
+            SUB_FOLDER="dummy_edge"
+            EDGE_FLAGS="--use_edge_processing --use_dummy_edge --dummy_edge_path $DUMMY_EDGE_PATH"
+            ;;
+        *)
+            echo "❌ 错误：未知的模式 $MODE" >&2
+            return 1
+            ;;
+    esac
+    
+    # Check if output directory already has images
+    OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/$SUB_FOLDER/epochs_$((10#$EPOCH_NUM))"
+    if [ -d "$OUTPUT_CHECK" ]; then
+        PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+        if [ "$PNG_COUNT" -gt 0 ]; then
+            # Images exist, check if metrics need recalculation
+            if [ "$ENABLE_METRICS_RECALC" = "true" ]; then
+                METRICS_FILE="$OUTPUT_CHECK/metrics.json"
+                if [ -f "$METRICS_FILE" ]; then
+                    if ! grep -q "edge_overlap" "$METRICS_FILE"; then
+                        echo "→ [$MODE] epoch=$EPOCH_NUM 已有图片，正在重新计算指标..." >&2
+                        python scripts/recalculate_metrics.py "$OUTPUT_CHECK" "$GT_IMG" > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                            echo "  ✓ [$MODE] epoch=$EPOCH_NUM 指标计算完成" >&2
+                        else
+                            echo "  ⚠ [$MODE] epoch=$EPOCH_NUM 指标计算失败" >&2
+                        fi
+                    fi
+                fi
+            fi
+            echo "✓ [$MODE] 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)" >&2
+            return 0
+        fi
+    fi
+    
+    # Run inference
+    echo "→ [$MODE] 处理 epoch=$EPOCH_NUM" >&2
+    python scripts/auto_inference.py \
+        --ckpt "$CKPT_FILE" \
+        --logs_dir "$USER_LOGS_DIR" \
+        --output_base "$OUTPUT_BASE" \
+        --sub_folder "$SUB_FOLDER" \
+        --init_img "$INIT_IMG" \
+        --gt_img "$GT_IMG" \
+        --config "$CONFIG" \
+        --vqgan_ckpt "$VQGAN_CKPT" \
+        --ddpm_steps $DDPM_STEPS \
+        --dec_w $DEC_W \
+        --seed $SEED \
+        --n_samples $N_SAMPLES \
+        --colorfix_type "$COLORFIX_TYPE" \
+        --input_size $INPUT_SIZE \
+        $EDGE_FLAGS \
+        --skip_existing 2>&1 | sed "s/^/[$MODE-$EPOCH_NUM] /" >&2
+    
+    if [ $? -eq 0 ]; then
+        echo "✓ [$MODE] epoch=$EPOCH_NUM 完成" >&2
+        return 0
+    else
+        echo "❌ [$MODE] epoch=$EPOCH_NUM 失败" >&2
+        return 1
+    fi
+}
+
+# Export the function so it can be used by parallel processes
+export -f process_single_inference
 
 # Function for mode 1: Inference all checkpoints
 inference_all_checkpoints() {
@@ -399,16 +499,33 @@ inference_all_checkpoints() {
         done
         
         echo ""
-        echo "✓ 开始执行推理..."
-        echo ""
     fi
     
-    # Process each checkpoint for edge mode
-    echo "正在运行 EDGE 模式推理..."
+    # Ask for number of parallel threads
+    echo ""
+    echo "=================================================="
+    echo "  并行处理设置"
+    echo "=================================================="
+    echo ""
+    echo "并行处理可以同时运行多个推理任务，加快处理速度"
+    echo "建议根据GPU数量和显存大小设置线程数"
+    echo ""
+    read -p "请输入并行线程数 [默认: 20]: " NUM_THREADS
+    NUM_THREADS="${NUM_THREADS:-20}"
+    
+    # Validate thread number
+    if ! [[ "$NUM_THREADS" =~ ^[0-9]+$ ]] || [ "$NUM_THREADS" -lt 1 ]; then
+        echo "❌ 错误：线程数必须是正整数，使用默认值 20"
+        NUM_THREADS=20
+    fi
+    
+    echo "✓ 将使用 $NUM_THREADS 个并行线程"
+    echo ""
+    echo "✓ 开始执行推理..."
     echo ""
     
-    EDGE_PROCESSED=0
-    EDGE_SKIPPED=0
+    # Prepare task list for edge mode
+    EDGE_TASK_FILE=$(mktemp)
     
     for CKPT_FILE in "${CKPT_FILES[@]}"; do
         # Extract epoch number from checkpoint filename
@@ -416,7 +533,6 @@ inference_all_checkpoints() {
         if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
             EPOCH_NUM="${BASH_REMATCH[1]}"
         else
-            echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
             continue
         fi
         
@@ -434,76 +550,28 @@ inference_all_checkpoints() {
             EPOCH_SELECTED=true
         fi
         
-        if [ "$EPOCH_SELECTED" = false ]; then
-            continue
-        fi
-        
-        # Check if output directory already has images
-        OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/edge/epochs_$((10#$EPOCH_NUM))"
-        if [ -d "$OUTPUT_CHECK" ]; then
-            # Count PNG files in output directory
-            PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
-            if [ "$PNG_COUNT" -gt 0 ]; then
-                # Images exist, check if Edge PSNR is calculated (if enabled)
-                if [ "$ENABLE_METRICS_RECALC" = true ]; then
-                    METRICS_FILE="$OUTPUT_CHECK/metrics.json"
-                    if [ -f "$METRICS_FILE" ]; then
-                    # Check if all metrics exist in metrics.json
-                    # Use edge_overlap as indicator (it's the last added metric)
-                    if ! grep -q "edge_overlap" "$METRICS_FILE"; then
-                        echo "→ epoch=$EPOCH_NUM 已有图片，但指标不完整，正在重新计算..."
-                        python scripts/recalculate_metrics.py "$OUTPUT_CHECK" "$DEFAULT_GT_IMG" > /dev/null 2>&1
-                        if [ $? -eq 0 ]; then
-                            echo "  ✓ 指标计算完成"
-                        else
-                            echo "  ⚠ 指标计算失败"
-                        fi
-                    fi
-                    fi
-                fi
-                echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
-                ((EDGE_SKIPPED++))
-                continue
-            fi
-        fi
-        
-        echo "→ 处理 epoch=$EPOCH_NUM"
-        python scripts/auto_inference.py \
-            --ckpt "$CKPT_FILE" \
-            --logs_dir "$USER_LOGS_DIR" \
-            --output_base "$OUTPUT_BASE" \
-            --sub_folder "edge" \
-            --init_img "$DEFAULT_INIT_IMG" \
-            --gt_img "$DEFAULT_GT_IMG" \
-            --config "$CONFIG" \
-            --vqgan_ckpt "$VQGAN_CKPT" \
-            --ddpm_steps $DDPM_STEPS \
-            --dec_w $DEC_W \
-            --seed $SEED \
-            --n_samples $N_SAMPLES \
-            --colorfix_type "$COLORFIX_TYPE" \
-            --input_size $INPUT_SIZE \
-            --use_edge_processing \
-            --skip_existing
-        
-        if [ $? -eq 0 ]; then
-            ((EDGE_PROCESSED++))
+        if [ "$EPOCH_SELECTED" = true ]; then
+            echo "$CKPT_FILE" >> "$EDGE_TASK_FILE"
         fi
     done
     
+    # Process edge mode checkpoints in parallel
+    echo "正在运行 EDGE 模式推理（并行数：$NUM_THREADS）..."
     echo ""
-    echo "EDGE 模式统计: 已处理 $EDGE_PROCESSED 个，跳过 $EDGE_SKIPPED 个"
+    
+    cat "$EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC'"
+    
+    rm -f "$EDGE_TASK_FILE"
+    
+    echo ""
+    echo "EDGE 模式处理完成"
     
     echo ""
     echo "=================================================="
     echo ""
     
-    # Process each checkpoint for no-edge mode
-    echo "正在运行 NO-EDGE 模式推理（使用黑色边缘图）..."
-    echo ""
-    
-    NO_EDGE_PROCESSED=0
-    NO_EDGE_SKIPPED=0
+    # Prepare task list for no-edge mode
+    NO_EDGE_TASK_FILE=$(mktemp)
     
     for CKPT_FILE in "${CKPT_FILES[@]}"; do
         # Extract epoch number from checkpoint filename
@@ -511,7 +579,6 @@ inference_all_checkpoints() {
         if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
             EPOCH_NUM="${BASH_REMATCH[1]}"
         else
-            echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
             continue
         fi
         
@@ -529,77 +596,28 @@ inference_all_checkpoints() {
             EPOCH_SELECTED=true
         fi
         
-        if [ "$EPOCH_SELECTED" = false ]; then
-            continue
-        fi
-        
-        # Check if output directory already has images
-        OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/no_edge/epochs_$((10#$EPOCH_NUM))"
-        if [ -d "$OUTPUT_CHECK" ]; then
-            # Count PNG files in output directory
-            PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
-            if [ "$PNG_COUNT" -gt 0 ]; then
-                # Images exist, check if Edge PSNR is calculated (if enabled)
-                if [ "$ENABLE_METRICS_RECALC" = true ]; then
-                    METRICS_FILE="$OUTPUT_CHECK/metrics.json"
-                    if [ -f "$METRICS_FILE" ]; then
-                    # Check if all metrics exist in metrics.json
-                    # Use edge_overlap as indicator (it's the last added metric)
-                    if ! grep -q "edge_overlap" "$METRICS_FILE"; then
-                        echo "→ epoch=$EPOCH_NUM 已有图片，但指标不完整，正在重新计算..."
-                        python scripts/recalculate_metrics.py "$OUTPUT_CHECK" "$DEFAULT_GT_IMG" > /dev/null 2>&1
-                        if [ $? -eq 0 ]; then
-                            echo "  ✓ 指标计算完成"
-                        else
-                            echo "  ⚠ 指标计算失败"
-                        fi
-                    fi
-                    fi
-                fi
-                echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
-                ((NO_EDGE_SKIPPED++))
-                continue
-            fi
-        fi
-        
-        echo "→ 处理 epoch=$EPOCH_NUM"
-        python scripts/auto_inference.py \
-            --ckpt "$CKPT_FILE" \
-            --logs_dir "$USER_LOGS_DIR" \
-            --output_base "$OUTPUT_BASE" \
-            --sub_folder "no_edge" \
-            --init_img "$DEFAULT_INIT_IMG" \
-            --gt_img "$DEFAULT_GT_IMG" \
-            --config "$CONFIG" \
-            --vqgan_ckpt "$VQGAN_CKPT" \
-            --ddpm_steps $DDPM_STEPS \
-            --dec_w $DEC_W \
-            --seed $SEED \
-            --n_samples $N_SAMPLES \
-            --colorfix_type "$COLORFIX_TYPE" \
-            --input_size $INPUT_SIZE \
-            --use_edge_processing \
-            --use_white_edge \
-            --skip_existing
-        
-        if [ $? -eq 0 ]; then
-            ((NO_EDGE_PROCESSED++))
+        if [ "$EPOCH_SELECTED" = true ]; then
+            echo "$CKPT_FILE" >> "$NO_EDGE_TASK_FILE"
         fi
     done
     
+    # Process no-edge mode checkpoints in parallel
+    echo "正在运行 NO-EDGE 模式推理（使用黑色边缘图，并行数：$NUM_THREADS）..."
     echo ""
-    echo "NO-EDGE 模式统计: 已处理 $NO_EDGE_PROCESSED 个，跳过 $NO_EDGE_SKIPPED 个"
+    
+    cat "$NO_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'no_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC'"
+    
+    rm -f "$NO_EDGE_TASK_FILE"
+    
+    echo ""
+    echo "NO-EDGE 模式处理完成"
     
     echo ""
     echo "=================================================="
     echo ""
     
-    # Process each checkpoint for dummy-edge mode
-    echo "正在运行 DUMMY-EDGE 模式推理（使用固定dummy edge图）..."
-    echo ""
-    
-    DUMMY_EDGE_PROCESSED=0
-    DUMMY_EDGE_SKIPPED=0
+    # Prepare task list for dummy-edge mode
+    DUMMY_EDGE_TASK_FILE=$(mktemp)
     DUMMY_EDGE_PATH="/stablesr_dataset/default_edge.png"
     
     for CKPT_FILE in "${CKPT_FILES[@]}"; do
@@ -608,7 +626,6 @@ inference_all_checkpoints() {
         if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
             EPOCH_NUM="${BASH_REMATCH[1]}"
         else
-            echo "⚠ 跳过无法解析的 checkpoint: $CKPT_BASENAME"
             continue
         fi
         
@@ -626,67 +643,21 @@ inference_all_checkpoints() {
             EPOCH_SELECTED=true
         fi
         
-        if [ "$EPOCH_SELECTED" = false ]; then
-            continue
-        fi
-        
-        # Check if output directory already has images
-        OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/dummy_edge/epochs_$((10#$EPOCH_NUM))"
-        if [ -d "$OUTPUT_CHECK" ]; then
-            # Count PNG files in output directory
-            PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
-            if [ "$PNG_COUNT" -gt 0 ]; then
-                # Images exist, check if Edge PSNR is calculated (if enabled)
-                if [ "$ENABLE_METRICS_RECALC" = true ]; then
-                    METRICS_FILE="$OUTPUT_CHECK/metrics.json"
-                    if [ -f "$METRICS_FILE" ]; then
-                    # Check if all metrics exist in metrics.json
-                    # Use edge_overlap as indicator (it's the last added metric)
-                    if ! grep -q "edge_overlap" "$METRICS_FILE"; then
-                        echo "→ epoch=$EPOCH_NUM 已有图片，但指标不完整，正在重新计算..."
-                        python scripts/recalculate_metrics.py "$OUTPUT_CHECK" "$DEFAULT_GT_IMG" > /dev/null 2>&1
-                        if [ $? -eq 0 ]; then
-                            echo "  ✓ 指标计算完成"
-                        else
-                            echo "  ⚠ 指标计算失败"
-                        fi
-                    fi
-                    fi
-                fi
-                echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
-                ((DUMMY_EDGE_SKIPPED++))
-                continue
-            fi
-        fi
-        
-        echo "→ 处理 epoch=$EPOCH_NUM"
-        python scripts/auto_inference.py \
-            --ckpt "$CKPT_FILE" \
-            --logs_dir "$USER_LOGS_DIR" \
-            --output_base "$OUTPUT_BASE" \
-            --sub_folder "dummy_edge" \
-            --init_img "$DEFAULT_INIT_IMG" \
-            --gt_img "$DEFAULT_GT_IMG" \
-            --config "$CONFIG" \
-            --vqgan_ckpt "$VQGAN_CKPT" \
-            --ddpm_steps $DDPM_STEPS \
-            --dec_w $DEC_W \
-            --seed $SEED \
-            --n_samples $N_SAMPLES \
-            --colorfix_type "$COLORFIX_TYPE" \
-            --input_size $INPUT_SIZE \
-            --use_edge_processing \
-            --use_dummy_edge \
-            --dummy_edge_path "$DUMMY_EDGE_PATH" \
-            --skip_existing
-        
-        if [ $? -eq 0 ]; then
-            ((DUMMY_EDGE_PROCESSED++))
+        if [ "$EPOCH_SELECTED" = true ]; then
+            echo "$CKPT_FILE" >> "$DUMMY_EDGE_TASK_FILE"
         fi
     done
     
+    # Process dummy-edge mode checkpoints in parallel
+    echo "正在运行 DUMMY-EDGE 模式推理（使用固定dummy edge图，并行数：$NUM_THREADS）..."
     echo ""
-    echo "DUMMY-EDGE 模式统计: 已处理 $DUMMY_EDGE_PROCESSED 个，跳过 $DUMMY_EDGE_SKIPPED 个"
+    
+    cat "$DUMMY_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'dummy_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' '$DUMMY_EDGE_PATH'"
+    
+    rm -f "$DUMMY_EDGE_TASK_FILE"
+    
+    echo ""
+    echo "DUMMY-EDGE 模式处理完成"
     
     echo ""
     echo "=================================================="
