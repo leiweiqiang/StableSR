@@ -57,13 +57,11 @@ show_menu() {
     echo "           StableSR Edge 推理菜单"
     echo "===================================================="
     echo ""
-    echo "1. 推理指定目录下全部 checkpoint (edge & no-edge)"
+    echo "1. 推理指定目录下全部 checkpoint (edge & no-edge & dummy-edge)"
     echo ""
-    echo "2. 推理指定 checkpoint 文件 (edge)"
+    echo "2. 推理指定 checkpoint 文件 (edge & no-edge & dummy-edge)"
     echo ""
-    echo "3. 推理指定 checkpoint 文件 (no-edge)"
-    echo ""
-    echo "4. 生成推理结果报告 (CSV格式)"
+    echo "3. 生成推理结果报告 (CSV格式)"
     echo ""
     echo "0. 退出"
     echo ""
@@ -163,8 +161,22 @@ inference_all_checkpoints() {
     DEFAULT_OUTPUT_BASE="$OUTPUT_BASE"
     save_defaults
     
-    echo "将处理所有 checkpoint"
-    echo "包括 edge（真实边缘）、no-edge（黑色边缘）和 dummy-edge（固定边缘）三种模式。"
+    # Ask whether to recalculate metrics for existing results
+    echo ""
+    echo "是否重新计算已有结果的指标？"
+    echo "  注意：新推理的结果会自动计算所有指标"
+    echo "  此选项仅针对跳过的已有结果"
+    echo ""
+    read -p "重新计算指标? (y/n) [默认: n]: " RECALC_METRICS
+    RECALC_METRICS="${RECALC_METRICS:-n}"
+    
+    if [ "$RECALC_METRICS" = "y" ] || [ "$RECALC_METRICS" = "Y" ]; then
+        echo "✓ 将检查并重新计算缺失的指标（包括 Edge PSNR）"
+        ENABLE_METRICS_RECALC=true
+    else
+        echo "✓ 跳过指标重新计算（仅计算新推理的结果）"
+        ENABLE_METRICS_RECALC=false
+    fi
     echo ""
     
     # Process checkpoints in selected directory
@@ -189,6 +201,208 @@ inference_all_checkpoints() {
     echo "✓ 找到 ${#CKPT_FILES[@]} 个 checkpoint 文件（已排除 last.ckpt）"
     echo ""
     
+    # Pre-check: count how many checkpoints need inference
+    echo "正在检查哪些 checkpoint 需要推理..."
+    echo ""
+    
+    NEW_CKPTS_EDGE=0
+    NEW_CKPTS_NO_EDGE=0
+    NEW_CKPTS_DUMMY=0
+    EXISTING_CKPTS=0
+    
+    # Arrays to store checkpoint epoch numbers that need inference
+    NEW_EDGE_EPOCHS=()
+    NEW_NO_EDGE_EPOCHS=()
+    NEW_DUMMY_EPOCHS=()
+    
+    for CKPT_FILE in "${CKPT_FILES[@]}"; do
+        CKPT_BASENAME=$(basename "$CKPT_FILE")
+        if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+            EPOCH_NUM="${BASH_REMATCH[1]}"
+            
+            # Check edge mode
+            OUTPUT_CHECK_EDGE="$OUTPUT_BASE/$SELECTED_DIR_NAME/edge/epochs_$((10#$EPOCH_NUM))"
+            if [ -d "$OUTPUT_CHECK_EDGE" ]; then
+                PNG_COUNT=$(find "$OUTPUT_CHECK_EDGE" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+                if [ "$PNG_COUNT" -eq 0 ]; then
+                    ((NEW_CKPTS_EDGE++))
+                    NEW_EDGE_EPOCHS+=("$EPOCH_NUM")
+                fi
+            else
+                ((NEW_CKPTS_EDGE++))
+                NEW_EDGE_EPOCHS+=("$EPOCH_NUM")
+            fi
+            
+            # Check no-edge mode
+            OUTPUT_CHECK_NO_EDGE="$OUTPUT_BASE/$SELECTED_DIR_NAME/no_edge/epochs_$((10#$EPOCH_NUM))"
+            if [ -d "$OUTPUT_CHECK_NO_EDGE" ]; then
+                PNG_COUNT=$(find "$OUTPUT_CHECK_NO_EDGE" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+                if [ "$PNG_COUNT" -eq 0 ]; then
+                    ((NEW_CKPTS_NO_EDGE++))
+                    NEW_NO_EDGE_EPOCHS+=("$EPOCH_NUM")
+                fi
+            else
+                ((NEW_CKPTS_NO_EDGE++))
+                NEW_NO_EDGE_EPOCHS+=("$EPOCH_NUM")
+            fi
+            
+            # Check dummy-edge mode
+            OUTPUT_CHECK_DUMMY="$OUTPUT_BASE/$SELECTED_DIR_NAME/dummy_edge/epochs_$((10#$EPOCH_NUM))"
+            if [ -d "$OUTPUT_CHECK_DUMMY" ]; then
+                PNG_COUNT=$(find "$OUTPUT_CHECK_DUMMY" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+                if [ "$PNG_COUNT" -eq 0 ]; then
+                    ((NEW_CKPTS_DUMMY++))
+                    NEW_DUMMY_EPOCHS+=("$EPOCH_NUM")
+                fi
+            else
+                ((NEW_CKPTS_DUMMY++))
+                NEW_DUMMY_EPOCHS+=("$EPOCH_NUM")
+            fi
+        fi
+    done
+    
+    # Create a unique sorted list of all checkpoints that need inference
+    declare -A UNIQUE_EPOCHS
+    for epoch in "${NEW_EDGE_EPOCHS[@]}" "${NEW_NO_EDGE_EPOCHS[@]}" "${NEW_DUMMY_EPOCHS[@]}"; do
+        UNIQUE_EPOCHS[$epoch]=1
+    done
+    
+    # Convert to sorted array
+    AVAILABLE_EPOCHS=($(for epoch in "${!UNIQUE_EPOCHS[@]}"; do echo "$epoch"; done | sort))
+    
+    # Display available checkpoints
+    echo "=================================================="
+    echo "  未推理的 Checkpoint 列表"
+    echo "=================================================="
+    echo ""
+    
+    if [ ${#AVAILABLE_EPOCHS[@]} -eq 0 ]; then
+        echo "✓ 没有新的推理任务，所有 checkpoint 结果已存在"
+        
+        # If no new inference but metrics recalc is enabled, continue
+        if [ "$ENABLE_METRICS_RECALC" = true ]; then
+            echo "  将继续检查指标..."
+        else
+            echo "  将直接生成报告..."
+        fi
+        echo ""
+    else
+        echo "找到 ${#AVAILABLE_EPOCHS[@]} 个未推理的 checkpoint："
+        echo ""
+        
+        # Display checkpoint list with IDs
+        for i in "${!AVAILABLE_EPOCHS[@]}"; do
+            epoch="${AVAILABLE_EPOCHS[$i]}"
+            id=$((i + 1))
+            
+            # Check which modes need inference for this epoch
+            modes_needed=()
+            for check_epoch in "${NEW_EDGE_EPOCHS[@]}"; do
+                if [ "$check_epoch" = "$epoch" ]; then
+                    modes_needed+=("edge")
+                    break
+                fi
+            done
+            for check_epoch in "${NEW_NO_EDGE_EPOCHS[@]}"; do
+                if [ "$check_epoch" = "$epoch" ]; then
+                    modes_needed+=("no-edge")
+                    break
+                fi
+            done
+            for check_epoch in "${NEW_DUMMY_EPOCHS[@]}"; do
+                if [ "$check_epoch" = "$epoch" ]; then
+                    modes_needed+=("dummy-edge")
+                    break
+                fi
+            done
+            
+            modes_str=$(IFS=", "; echo "${modes_needed[*]}")
+            printf "  [%2d] epoch=%s (需要: %s)\n" "$id" "$epoch" "$modes_str"
+        done
+        
+        echo ""
+        echo "=================================================="
+        echo ""
+        echo "请选择要推理的 checkpoint："
+        echo "  - 输入序号，多个序号用逗号分隔，例如：1,3,5"
+        echo "  - 输入 'all' 或直接回车推理所有"
+        echo "  - 输入 'q' 取消"
+        echo ""
+        
+        while true; do
+            read -p "请选择 [all]: " CKPT_SELECTION
+            CKPT_SELECTION="${CKPT_SELECTION:-all}"
+            
+            if [ "$CKPT_SELECTION" = "q" ] || [ "$CKPT_SELECTION" = "Q" ]; then
+                echo "✗ 用户取消推理"
+                echo ""
+                return
+            fi
+            
+            if [ "$CKPT_SELECTION" = "all" ] || [ "$CKPT_SELECTION" = "ALL" ]; then
+                # Select all checkpoints
+                SELECTED_EPOCHS=("${AVAILABLE_EPOCHS[@]}")
+                echo "✓ 将推理所有 ${#SELECTED_EPOCHS[@]} 个 checkpoint"
+                break
+            fi
+            
+            # Parse comma-separated IDs
+            IFS=',' read -ra SELECTED_IDS <<< "$CKPT_SELECTION"
+            SELECTED_EPOCHS=()
+            INVALID_SELECTION=false
+            
+            for id_str in "${SELECTED_IDS[@]}"; do
+                # Trim whitespace
+                id_str=$(echo "$id_str" | xargs)
+                
+                # Validate it's a number
+                if ! [[ "$id_str" =~ ^[0-9]+$ ]]; then
+                    echo "❌ 错误：'$id_str' 不是有效的序号"
+                    INVALID_SELECTION=true
+                    break
+                fi
+                
+                # Convert to array index (id - 1)
+                idx=$((id_str - 1))
+                
+                # Validate range
+                if [ $idx -lt 0 ] || [ $idx -ge ${#AVAILABLE_EPOCHS[@]} ]; then
+                    echo "❌ 错误：序号 $id_str 超出范围 (1-${#AVAILABLE_EPOCHS[@]})"
+                    INVALID_SELECTION=true
+                    break
+                fi
+                
+                # Add epoch to selection
+                SELECTED_EPOCHS+=("${AVAILABLE_EPOCHS[$idx]}")
+            done
+            
+            if [ "$INVALID_SELECTION" = true ]; then
+                echo "请重新输入"
+                echo ""
+                continue
+            fi
+            
+            if [ ${#SELECTED_EPOCHS[@]} -eq 0 ]; then
+                echo "❌ 错误：未选择任何 checkpoint"
+                echo "请重新输入"
+                echo ""
+                continue
+            fi
+            
+            # Display selected checkpoints
+            echo ""
+            echo "✓ 已选择 ${#SELECTED_EPOCHS[@]} 个 checkpoint:"
+            for epoch in "${SELECTED_EPOCHS[@]}"; do
+                echo "    - epoch=$epoch"
+            done
+            break
+        done
+        
+        echo ""
+        echo "✓ 开始执行推理..."
+        echo ""
+    fi
+    
     # Process each checkpoint for edge mode
     echo "正在运行 EDGE 模式推理..."
     echo ""
@@ -206,12 +420,47 @@ inference_all_checkpoints() {
             continue
         fi
         
+        # Check if this epoch is in the selected list
+        EPOCH_SELECTED=false
+        if [ ${#SELECTED_EPOCHS[@]} -gt 0 ]; then
+            for selected_epoch in "${SELECTED_EPOCHS[@]}"; do
+                if [ "$selected_epoch" = "$EPOCH_NUM" ]; then
+                    EPOCH_SELECTED=true
+                    break
+                fi
+            done
+        else
+            # If no selection made (all existing), process all
+            EPOCH_SELECTED=true
+        fi
+        
+        if [ "$EPOCH_SELECTED" = false ]; then
+            continue
+        fi
+        
         # Check if output directory already has images
         OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/edge/epochs_$((10#$EPOCH_NUM))"
         if [ -d "$OUTPUT_CHECK" ]; then
             # Count PNG files in output directory
             PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
             if [ "$PNG_COUNT" -gt 0 ]; then
+                # Images exist, check if Edge PSNR is calculated (if enabled)
+                if [ "$ENABLE_METRICS_RECALC" = true ]; then
+                    METRICS_FILE="$OUTPUT_CHECK/metrics.json"
+                    if [ -f "$METRICS_FILE" ]; then
+                    # Check if all metrics exist in metrics.json
+                    # Use edge_overlap as indicator (it's the last added metric)
+                    if ! grep -q "edge_overlap" "$METRICS_FILE"; then
+                        echo "→ epoch=$EPOCH_NUM 已有图片，但指标不完整，正在重新计算..."
+                        python scripts/recalculate_metrics.py "$OUTPUT_CHECK" "$DEFAULT_GT_IMG" > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                            echo "  ✓ 指标计算完成"
+                        else
+                            echo "  ⚠ 指标计算失败"
+                        fi
+                    fi
+                    fi
+                fi
                 echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
                 ((EDGE_SKIPPED++))
                 continue
@@ -266,12 +515,47 @@ inference_all_checkpoints() {
             continue
         fi
         
+        # Check if this epoch is in the selected list
+        EPOCH_SELECTED=false
+        if [ ${#SELECTED_EPOCHS[@]} -gt 0 ]; then
+            for selected_epoch in "${SELECTED_EPOCHS[@]}"; do
+                if [ "$selected_epoch" = "$EPOCH_NUM" ]; then
+                    EPOCH_SELECTED=true
+                    break
+                fi
+            done
+        else
+            # If no selection made (all existing), process all
+            EPOCH_SELECTED=true
+        fi
+        
+        if [ "$EPOCH_SELECTED" = false ]; then
+            continue
+        fi
+        
         # Check if output directory already has images
         OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/no_edge/epochs_$((10#$EPOCH_NUM))"
         if [ -d "$OUTPUT_CHECK" ]; then
             # Count PNG files in output directory
             PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
             if [ "$PNG_COUNT" -gt 0 ]; then
+                # Images exist, check if Edge PSNR is calculated (if enabled)
+                if [ "$ENABLE_METRICS_RECALC" = true ]; then
+                    METRICS_FILE="$OUTPUT_CHECK/metrics.json"
+                    if [ -f "$METRICS_FILE" ]; then
+                    # Check if all metrics exist in metrics.json
+                    # Use edge_overlap as indicator (it's the last added metric)
+                    if ! grep -q "edge_overlap" "$METRICS_FILE"; then
+                        echo "→ epoch=$EPOCH_NUM 已有图片，但指标不完整，正在重新计算..."
+                        python scripts/recalculate_metrics.py "$OUTPUT_CHECK" "$DEFAULT_GT_IMG" > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                            echo "  ✓ 指标计算完成"
+                        else
+                            echo "  ⚠ 指标计算失败"
+                        fi
+                    fi
+                    fi
+                fi
                 echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
                 ((NO_EDGE_SKIPPED++))
                 continue
@@ -328,12 +612,47 @@ inference_all_checkpoints() {
             continue
         fi
         
+        # Check if this epoch is in the selected list
+        EPOCH_SELECTED=false
+        if [ ${#SELECTED_EPOCHS[@]} -gt 0 ]; then
+            for selected_epoch in "${SELECTED_EPOCHS[@]}"; do
+                if [ "$selected_epoch" = "$EPOCH_NUM" ]; then
+                    EPOCH_SELECTED=true
+                    break
+                fi
+            done
+        else
+            # If no selection made (all existing), process all
+            EPOCH_SELECTED=true
+        fi
+        
+        if [ "$EPOCH_SELECTED" = false ]; then
+            continue
+        fi
+        
         # Check if output directory already has images
         OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/dummy_edge/epochs_$((10#$EPOCH_NUM))"
         if [ -d "$OUTPUT_CHECK" ]; then
             # Count PNG files in output directory
             PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
             if [ "$PNG_COUNT" -gt 0 ]; then
+                # Images exist, check if Edge PSNR is calculated (if enabled)
+                if [ "$ENABLE_METRICS_RECALC" = true ]; then
+                    METRICS_FILE="$OUTPUT_CHECK/metrics.json"
+                    if [ -f "$METRICS_FILE" ]; then
+                    # Check if all metrics exist in metrics.json
+                    # Use edge_overlap as indicator (it's the last added metric)
+                    if ! grep -q "edge_overlap" "$METRICS_FILE"; then
+                        echo "→ epoch=$EPOCH_NUM 已有图片，但指标不完整，正在重新计算..."
+                        python scripts/recalculate_metrics.py "$OUTPUT_CHECK" "$DEFAULT_GT_IMG" > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                            echo "  ✓ 指标计算完成"
+                        else
+                            echo "  ⚠ 指标计算失败"
+                        fi
+                    fi
+                    fi
+                fi
                 echo "✓ 跳过 epoch=$EPOCH_NUM (已有 $PNG_COUNT 张图片)"
                 ((DUMMY_EDGE_SKIPPED++))
                 continue
@@ -393,6 +712,22 @@ inference_all_checkpoints() {
         if [ -d "$OUTPUT_CHECK" ]; then
             PNG_COUNT=$(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
             if [ "$PNG_COUNT" -gt 0 ]; then
+                # Images exist, check if Edge PSNR is calculated (if enabled)
+                if [ "$ENABLE_METRICS_RECALC" = true ]; then
+                    METRICS_FILE="$OUTPUT_CHECK/metrics.json"
+                    if [ -f "$METRICS_FILE" ]; then
+                        # Check if Edge PSNR exists in metrics.json
+                        if ! grep -q "edge_psnr" "$METRICS_FILE"; then
+                            echo "→ StableSR baseline 已有图片，但缺少 Edge PSNR，正在计算..."
+                            python scripts/recalculate_metrics.py "$OUTPUT_CHECK" "$DEFAULT_GT_IMG" > /dev/null 2>&1
+                            if [ $? -eq 0 ]; then
+                                echo "  ✓ Edge PSNR 计算完成"
+                            else
+                                echo "  ⚠ Edge PSNR 计算失败"
+                            fi
+                        fi
+                    fi
+                fi
                 echo "✓ StableSR baseline 已存在 ($PNG_COUNT 张图片)，跳过"
                 STABLESR_PROCESSED=0
                 STABLESR_SKIPPED=1
@@ -496,8 +831,100 @@ inference_all_checkpoints() {
     echo "结果保存在各子目录的 metrics.json 文件中"
     echo ""
     
+    # Check and recalculate metrics if needed (only if enabled)
+    if [ "$ENABLE_METRICS_RECALC" = true ]; then
+        echo "===================================================="
+        echo "  批量检查并重新计算缺失的指标"
+        echo "===================================================="
+        echo ""
+        
+        # Find all metrics.json files in the results directory
+        RESULTS_PATH="$OUTPUT_BASE/$SELECTED_DIR_NAME"
+        
+        if [ -d "$RESULTS_PATH" ]; then
+        echo "扫描目录: $RESULTS_PATH"
+        echo ""
+        
+        # Create temporary files for counting
+        TEMP_DIR=$(mktemp -d)
+        UPDATED_COUNT_FILE="$TEMP_DIR/updated"
+        EXISTING_COUNT_FILE="$TEMP_DIR/existing"
+        FAILED_COUNT_FILE="$TEMP_DIR/failed"
+        echo "0" > "$UPDATED_COUNT_FILE"
+        echo "0" > "$EXISTING_COUNT_FILE"
+        echo "0" > "$FAILED_COUNT_FILE"
+        
+        # Find and process all metrics.json files
+        find "$RESULTS_PATH" -name "metrics.json" -type f | while IFS= read -r METRICS_FILE; do
+            METRICS_DIR=$(dirname "$METRICS_FILE")
+            
+            # Display relative path
+            REL_PATH="${METRICS_DIR#$RESULTS_PATH/}"
+            echo "检查: $REL_PATH"
+            
+            # Capture output and exit code
+            OUTPUT=$(python scripts/recalculate_metrics.py "$METRICS_DIR" "$DEFAULT_GT_IMG" 2>&1)
+            EXIT_CODE=$?
+            
+            # Display output with indentation
+            echo "$OUTPUT" | while IFS= read -r line; do
+                echo "  $line"
+            done
+            
+            # Update counters based on exit code and output
+            if [ $EXIT_CODE -eq 0 ]; then
+                if echo "$OUTPUT" | grep -q "所有指标已存在"; then
+                    echo $(($(cat "$EXISTING_COUNT_FILE") + 1)) > "$EXISTING_COUNT_FILE"
+                else
+                    echo $(($(cat "$UPDATED_COUNT_FILE") + 1)) > "$UPDATED_COUNT_FILE"
+                fi
+            else
+                echo $(($(cat "$FAILED_COUNT_FILE") + 1)) > "$FAILED_COUNT_FILE"
+            fi
+            
+            echo ""
+        done
+        
+        # Read final counts
+        L2LOSS_UPDATED=$(cat "$UPDATED_COUNT_FILE" 2>/dev/null || echo "0")
+        L2LOSS_ALREADY_EXISTS=$(cat "$EXISTING_COUNT_FILE" 2>/dev/null || echo "0")
+        L2LOSS_FAILED=$(cat "$FAILED_COUNT_FILE" 2>/dev/null || echo "0")
+        
+        # Cleanup temp directory
+        rm -rf "$TEMP_DIR"
+        
+        echo "===================================================="
+        echo "指标检查完成"
+        echo "===================================================="
+        echo ""
+        
+        TOTAL_METRICS=$((L2LOSS_UPDATED + L2LOSS_ALREADY_EXISTS + L2LOSS_FAILED))
+        if [ $TOTAL_METRICS -gt 0 ]; then
+            echo "统计信息："
+            echo "  找到 $TOTAL_METRICS 个 metrics.json 文件"
+            if [ $L2LOSS_UPDATED -gt 0 ]; then
+                echo "  ✓ 已更新: $L2LOSS_UPDATED 个"
+            fi
+            if [ $L2LOSS_ALREADY_EXISTS -gt 0 ]; then
+                echo "  ✓ 已存在: $L2LOSS_ALREADY_EXISTS 个"
+            fi
+            if [ $L2LOSS_FAILED -gt 0 ]; then
+                echo "  ✗ 失败: $L2LOSS_FAILED 个"
+            fi
+        else
+            echo "未找到 metrics.json 文件"
+        fi
+        echo ""
+        fi  # End of if [ -d "$RESULTS_PATH" ]
+    else
+        echo "✓ 跳过指标批量检查（用户选择不重新计算）"
+        echo ""
+    fi  # End of if [ "$ENABLE_METRICS_RECALC" = true ]
+    
     # Generate summary report using the Python script from menu 4
-    echo "正在生成推理结果报告..."
+    echo "===================================================="
+    echo "  正在生成推理结果报告"
+    echo "===================================================="
     echo ""
     
     # Determine the results path
@@ -544,12 +971,17 @@ inference_all_checkpoints() {
     fi
 }
 
-# Function for mode 2: Specific checkpoint with edge
-inference_specific_edge() {
+# Function for mode 2: Specific checkpoint with all modes
+inference_specific_checkpoint() {
     echo ""
     echo "=================================================="
-    echo "  模式 2: 推理指定 Checkpoint (Edge 模式)"
+    echo "  模式 2: 推理指定 Checkpoint (全模式)"
     echo "=================================================="
+    echo ""
+    echo "将使用指定的 checkpoint 运行三种模式："
+    echo "  - Edge 模式（真实边缘）"
+    echo "  - No-Edge 模式（黑色边缘）"
+    echo "  - Dummy-Edge 模式（固定边缘）"
     echo ""
     
     # Get checkpoint path
@@ -686,332 +1118,226 @@ inference_specific_edge() {
     DEFAULT_VQGAN_CKPT="$VQGAN_PATH"
     save_defaults
     
-    echo ""
-    echo "正在运行 EDGE 模式推理..."
-    echo ""
-    
-    # Extract experiment name from checkpoint path for output naming
+    # Extract experiment name and epoch from checkpoint path
     EXP_NAME=$(basename $(dirname $(dirname "$CKPT")))
-    CKPT_NAME=$(basename "$CKPT" .ckpt)
-    FINAL_OUTPUT="$OUTPUT_DIR/${EXP_NAME}_${CKPT_NAME}/edge"
+    CKPT_BASENAME=$(basename "$CKPT")
     
-    # Build command
-    CMD="python scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py \
-        --config \"$CONFIG_PATH\" \
-        --ckpt \"$CKPT\" \
-        --init-img \"$INIT_IMG\" \
-        --gt-img \"$GT_IMG\" \
-        --outdir \"$FINAL_OUTPUT\" \
-        --ddpm_steps $DDPM_STEPS \
-        --dec_w $DEC_W \
-        --seed $SEED \
-        --n_samples $N_SAMPLES \
-        --vqgan_ckpt \"$VQGAN_PATH\" \
-        --colorfix_type \"$COLORFIX_TYPE\" \
-        --max_images $MAX_IMAGES \
-        --use_edge_processing"
+    # Extract epoch number
+    if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+        EPOCH_NUM="${BASH_REMATCH[1]}"
+    else
+        EPOCH_NUM="unknown"
+    fi
     
-    # Add specific file if set
+    # Base output directory
+    BASE_OUTPUT="$OUTPUT_DIR/$EXP_NAME"
+    
+    echo ""
+    echo "=================================================="
+    echo "  推理配置"
+    echo "=================================================="
+    echo "Checkpoint: $CKPT"
+    echo "Epoch: $EPOCH_NUM"
+    echo "输出目录: $BASE_OUTPUT"
+    echo "LR图片: $INIT_IMG"
+    echo "GT图片: $GT_IMG"
     if [ -n "$SPECIFIC_FILE" ]; then
-        CMD="$CMD --specific_file \"$SPECIFIC_FILE\""
-    fi
-    
-    # Execute command
-    eval $CMD
-    
-    echo ""
-    echo "=================================================="
-    echo "  推理完成！"
-    echo "  输出位置: $FINAL_OUTPUT"
-    echo "=================================================="
-    echo ""
-    
-    # Ask if user wants to calculate metrics
-    read -p "是否计算指标 (PSNR/SSIM/LPIPS)? (y/n) [y]: " CALC_METRICS
-    CALC_METRICS=${CALC_METRICS:-y}
-    
-    if [ "$CALC_METRICS" = "y" ] || [ "$CALC_METRICS" = "Y" ]; then
-        echo ""
-        echo "正在计算指标..."
-        python scripts/calculate_metrics_standalone.py \
-            --output_dir "$FINAL_OUTPUT" \
-            --gt_dir "$GT_IMG" \
-            --crop_border 0
-        echo ""
-        echo "✓ 指标计算完成"
-        echo "结果保存在: $FINAL_OUTPUT/metrics.json"
-        echo ""
-    fi
-}
-
-# Function for mode 3: Specific checkpoint without edge
-inference_specific_no_edge() {
-    echo ""
-    echo "=================================================="
-    echo "  模式 3: 推理指定 Checkpoint (No-Edge 模式)"
-    echo "=================================================="
-    echo ""
-    
-    # Get checkpoint path
-    while true; do
-        CKPT=$(read_with_default "Checkpoint 路径" "$DEFAULT_CKPT")
-        
-        # Validate checkpoint exists
-        if [ ! -f "$CKPT" ]; then
-            echo "❌ 错误：Checkpoint 文件不存在: $CKPT"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            echo "✓ Checkpoint 文件存在"
-            break
-        fi
-    done
-    
-    # Get output directory
-    OUTPUT_DIR=$(read_with_default "输出目录" "$DEFAULT_OUTPUT_BASE")
-    echo "✓ 输出目录: $OUTPUT_DIR"
-    
-    # Get init image path
-    while true; do
-        INIT_IMG=$(read_with_default "输入 LR 图片目录" "$DEFAULT_INIT_IMG")
-        
-        if [ ! -d "$INIT_IMG" ]; then
-            echo "❌ 错误：LR 图片目录不存在: $INIT_IMG"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            IMG_COUNT=$(ls -1 "$INIT_IMG" | wc -l)
-            echo "✓ LR 图片目录存在，共 $IMG_COUNT 个文件"
-            break
-        fi
-    done
-    
-    # Get GT image path
-    while true; do
-        GT_IMG=$(read_with_default "GT HR 图片目录" "$DEFAULT_GT_IMG")
-        
-        if [ ! -d "$GT_IMG" ]; then
-            echo "❌ 错误：GT 图片目录不存在: $GT_IMG"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            GT_COUNT=$(ls -1 "$GT_IMG" | wc -l)
-            echo "✓ GT 图片目录存在，共 $GT_COUNT 个文件"
-            break
-        fi
-    done
-    
-    # Get config file path
-    while true; do
-        CONFIG_PATH=$(read_with_default "Config 文件路径" "$DEFAULT_CONFIG")
-        
-        if [ ! -f "$CONFIG_PATH" ]; then
-            echo "❌ 错误：Config 文件不存在: $CONFIG_PATH"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            echo "✓ Config 文件存在"
-            break
-        fi
-    done
-    
-    # Get VQGAN checkpoint path
-    while true; do
-        VQGAN_PATH=$(read_with_default "VQGAN Checkpoint 路径" "$DEFAULT_VQGAN_CKPT")
-        
-        if [ ! -f "$VQGAN_PATH" ]; then
-            echo "❌ 错误：VQGAN Checkpoint 文件不存在: $VQGAN_PATH"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            echo "✓ VQGAN Checkpoint 文件存在"
-            break
-        fi
-    done
-    
-    # Ask if user wants to process specific file
-    echo ""
-    read -p "是否只推理指定文件? (y/n) [n]: " USE_SPECIFIC_FILE
-    USE_SPECIFIC_FILE=${USE_SPECIFIC_FILE:-n}
-    
-    SPECIFIC_FILE=""
-    if [ "$USE_SPECIFIC_FILE" = "y" ] || [ "$USE_SPECIFIC_FILE" = "Y" ]; then
-        while true; do
-            read -p "输入文件名 (例如: 00001.png): " SPECIFIC_FILE
-            
-            if [ -z "$SPECIFIC_FILE" ]; then
-                echo "❌ 文件名不能为空"
-                continue
-            fi
-            
-            if [ ! -f "$INIT_IMG/$SPECIFIC_FILE" ]; then
-                echo "❌ 错误：文件不存在: $INIT_IMG/$SPECIFIC_FILE"
-                read -p "重新输入? (y/n): " retry
-                if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                    return
-                fi
-            else
-                echo "✓ 文件存在: $SPECIFIC_FILE"
-                break
-            fi
-        done
-    fi
-    
-    # Get max images (only if not using specific file)
-    if [ -z "$SPECIFIC_FILE" ]; then
-        MAX_IMAGES=$(read_with_default "最大推理图片数量 (-1=全部)" "$DEFAULT_MAX_IMAGES")
-        echo "✓ 推理图片数量: $MAX_IMAGES"
+        echo "指定文件: $SPECIFIC_FILE"
     else
-        MAX_IMAGES=1
-        echo "✓ 推理单个文件"
+        echo "推理数量: $MAX_IMAGES 张"
+    fi
+    echo "=================================================="
+    echo ""
+    
+    # Confirm before running
+    read -p "确认开始推理三种模式? (y/n) [y]: " CONFIRM_RUN
+    CONFIRM_RUN=${CONFIRM_RUN:-y}
+    
+    if [ "$CONFIRM_RUN" != "y" ] && [ "$CONFIRM_RUN" != "Y" ]; then
+        echo "✗ 用户取消推理"
+        return
     fi
     
-    # Save as new defaults
-    DEFAULT_CKPT="$CKPT"
-    DEFAULT_OUTPUT_BASE="$OUTPUT_DIR"
-    DEFAULT_INIT_IMG="$INIT_IMG"
-    DEFAULT_GT_IMG="$GT_IMG"
-    DEFAULT_MAX_IMAGES="$MAX_IMAGES"
-    DEFAULT_CONFIG="$CONFIG_PATH"
-    DEFAULT_VQGAN_CKPT="$VQGAN_PATH"
-    save_defaults
-    
+    # Process EDGE mode
     echo ""
-    echo "正在运行 NO-EDGE 模式推理（使用黑色边缘图）..."
-    echo ""
+    echo "=================================================="
+    echo "  [1/3] EDGE 模式推理"
+    echo "=================================================="
     
-    # Extract experiment name from checkpoint path for output naming
-    EXP_NAME=$(basename $(dirname $(dirname "$CKPT")))
-    CKPT_NAME=$(basename "$CKPT" .ckpt)
-    FINAL_OUTPUT="$OUTPUT_DIR/${EXP_NAME}_${CKPT_NAME}/no_edge"
-    
-    # Build command
-    # For no-edge mode, we use --use_edge_processing with --use_white_edge
-    # This passes black (all negative ones) edge maps to the model
-    CMD="python scripts/sr_val_ddpm_text_T_vqganfin_old_edge.py \
-        --config \"$CONFIG_PATH\" \
-        --ckpt \"$CKPT\" \
-        --init-img \"$INIT_IMG\" \
-        --gt-img \"$GT_IMG\" \
-        --outdir \"$FINAL_OUTPUT\" \
+    python scripts/auto_inference.py \
+        --ckpt "$CKPT" \
+        --output_base "$BASE_OUTPUT" \
+        --sub_folder "edge" \
+        --init_img "$INIT_IMG" \
+        --gt_img "$GT_IMG" \
+        --config "$CONFIG_PATH" \
+        --vqgan_ckpt "$VQGAN_PATH" \
         --ddpm_steps $DDPM_STEPS \
         --dec_w $DEC_W \
         --seed $SEED \
         --n_samples $N_SAMPLES \
-        --vqgan_ckpt \"$VQGAN_PATH\" \
-        --colorfix_type \"$COLORFIX_TYPE\" \
-        --max_images $MAX_IMAGES \
+        --colorfix_type "$COLORFIX_TYPE" \
+        --input_size $INPUT_SIZE \
         --use_edge_processing \
-        --use_white_edge"
+        --calculate_metrics \
+        --epoch_override "$EPOCH_NUM" \
+        --exp_name_override "$EXP_NAME"
     
-    # Add specific file if set
-    if [ -n "$SPECIFIC_FILE" ]; then
-        CMD="$CMD --specific_file \"$SPECIFIC_FILE\""
-    fi
+    EDGE_SUCCESS=$?
     
-    # Execute command
-    eval $CMD
-    
+    # Process NO-EDGE mode
     echo ""
     echo "=================================================="
-    echo "  推理完成！"
-    echo "  输出位置: $FINAL_OUTPUT"
+    echo "  [2/3] NO-EDGE 模式推理"
+    echo "=================================================="
+    
+    python scripts/auto_inference.py \
+        --ckpt "$CKPT" \
+        --output_base "$BASE_OUTPUT" \
+        --sub_folder "no_edge" \
+        --init_img "$INIT_IMG" \
+        --gt_img "$GT_IMG" \
+        --config "$CONFIG_PATH" \
+        --vqgan_ckpt "$VQGAN_PATH" \
+        --ddpm_steps $DDPM_STEPS \
+        --dec_w $DEC_W \
+        --seed $SEED \
+        --n_samples $N_SAMPLES \
+        --colorfix_type "$COLORFIX_TYPE" \
+        --input_size $INPUT_SIZE \
+        --use_edge_processing \
+        --use_white_edge \
+        --calculate_metrics \
+        --epoch_override "$EPOCH_NUM" \
+        --exp_name_override "$EXP_NAME"
+    
+    NO_EDGE_SUCCESS=$?
+    
+    # Process DUMMY-EDGE mode
+    echo ""
+    echo "=================================================="
+    echo "  [3/3] DUMMY-EDGE 模式推理"
+    echo "=================================================="
+    DUMMY_EDGE_PATH="/stablesr_dataset/default_edge.png"
+    
+    python scripts/auto_inference.py \
+        --ckpt "$CKPT" \
+        --output_base "$BASE_OUTPUT" \
+        --sub_folder "dummy_edge" \
+        --init_img "$INIT_IMG" \
+        --gt_img "$GT_IMG" \
+        --config "$CONFIG_PATH" \
+        --vqgan_ckpt "$VQGAN_PATH" \
+        --ddpm_steps $DDPM_STEPS \
+        --dec_w $DEC_W \
+        --seed $SEED \
+        --n_samples $N_SAMPLES \
+        --colorfix_type "$COLORFIX_TYPE" \
+        --input_size $INPUT_SIZE \
+        --use_edge_processing \
+        --use_dummy_edge \
+        --dummy_edge_path "$DUMMY_EDGE_PATH" \
+        --calculate_metrics \
+        --epoch_override "$EPOCH_NUM" \
+        --exp_name_override "$EXP_NAME"
+    
+    DUMMY_SUCCESS=$?
+    
+    # Show summary
+    echo ""
+    echo "=================================================="
+    echo "  全部推理完成！"
     echo "=================================================="
     echo ""
-    
-    # Ask if user wants to calculate metrics
-    read -p "是否计算指标 (PSNR/SSIM/LPIPS)? (y/n) [y]: " CALC_METRICS
-    CALC_METRICS=${CALC_METRICS:-y}
-    
-    if [ "$CALC_METRICS" = "y" ] || [ "$CALC_METRICS" = "Y" ]; then
-        echo ""
-        echo "正在计算指标..."
-        python scripts/calculate_metrics_standalone.py \
-            --output_dir "$FINAL_OUTPUT" \
-            --gt_dir "$GT_IMG" \
-            --crop_border 0
-        echo ""
-        echo "✓ 指标计算完成"
-        echo "结果保存在: $FINAL_OUTPUT/metrics.json"
-        echo ""
+    echo "结果统计："
+    if [ $EDGE_SUCCESS -eq 0 ]; then
+        echo "  ✓ EDGE 模式: 成功"
+        echo "     输出: $BASE_OUTPUT/edge/epochs_$((10#$EPOCH_NUM))"
+        echo "     指标: metrics.json, metrics.csv"
+    else
+        echo "  ✗ EDGE 模式: 失败"
     fi
+    
+    if [ $NO_EDGE_SUCCESS -eq 0 ]; then
+        echo "  ✓ NO-EDGE 模式: 成功"
+        echo "     输出: $BASE_OUTPUT/no_edge/epochs_$((10#$EPOCH_NUM))"
+        echo "     指标: metrics.json, metrics.csv"
+    else
+        echo "  ✗ NO-EDGE 模式: 失败"
+    fi
+    
+    if [ $DUMMY_SUCCESS -eq 0 ]; then
+        echo "  ✓ DUMMY-EDGE 模式: 成功"
+        echo "     输出: $BASE_OUTPUT/dummy_edge/epochs_$((10#$EPOCH_NUM))"
+        echo "     指标: metrics.json, metrics.csv"
+    else
+        echo "  ✗ DUMMY-EDGE 模式: 失败"
+    fi
+    
+    echo ""
+    echo "所有指标（PSNR, SSIM, LPIPS, Edge PSNR, Edge Overlap）已自动计算"
+    echo ""
+    
+    # Ask if generate comprehensive report
+    read -p "是否生成综合报告? (y/n) [y]: " GEN_REPORT
+    GEN_REPORT=${GEN_REPORT:-y}
+    
+    if [ "$GEN_REPORT" = "y" ] || [ "$GEN_REPORT" = "Y" ]; then
+        echo ""
+        echo "正在生成综合报告..."
+        PYTHON_SCRIPT="scripts/generate_metrics_report.py"
+        if [ -f "$PYTHON_SCRIPT" ]; then
+            python "$PYTHON_SCRIPT" "$BASE_OUTPUT"
+            
+            DIR_NAME=$(basename "$BASE_OUTPUT")
+            OUTPUT_REPORT="$BASE_OUTPUT/${DIR_NAME}_inference_report.csv"
+            if [ -f "$OUTPUT_REPORT" ]; then
+                echo "✓ 报告生成成功: $OUTPUT_REPORT"
+            fi
+        else
+            echo "⚠ 报告生成脚本不存在: $PYTHON_SCRIPT"
+        fi
+    fi
+    
+    echo ""
 }
 
-# Function for mode 4: Generate report
+# Function for mode 3: Generate report
 generate_report() {
     echo ""
     echo "=================================================="
-    echo "  模式 4: 生成推理结果报告 (CSV格式)"
+    echo "  模式 3: 生成推理结果报告 (CSV格式)"
     echo "=================================================="
     echo ""
     
-    # Find latest directory in /logs
-    LOGS_BASE_DIR="/root/dp/StableSR_Edge_v2_loss/logs"
-    
-    if [ -d "$LOGS_BASE_DIR" ]; then
-        # Get list of directories (excluding child_runs) sorted by modification time
-        LATEST_DIR=$(find "$LOGS_BASE_DIR" -mindepth 1 -maxdepth 1 -type d ! -name "child_runs" -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    # Ask for results directory
+    while true; do
+        read -p "请输入推理结果目录路径: " RESULTS_PATH
         
-        if [ -n "$LATEST_DIR" ]; then
-            DIR_NAME=$(basename "$LATEST_DIR")
-            echo "检测到 logs 目录中最新的目录:"
-            echo "  $DIR_NAME"
-            echo ""
-            read -p "是否使用此目录? (y/n) [y]: " USE_LATEST
-            USE_LATEST=${USE_LATEST:-y}
-            
-            if [ "$USE_LATEST" = "y" ] || [ "$USE_LATEST" = "Y" ]; then
-                RESULTS_PATH="$LATEST_DIR"
-                echo "✓ 使用目录: $RESULTS_PATH"
-            else
-                RESULTS_PATH=""
+        if [ -z "$RESULTS_PATH" ]; then
+            echo "❌ 错误：路径不能为空"
+            read -p "是否返回菜单? (y/n): " return_menu
+            if [ "$return_menu" = "y" ] || [ "$return_menu" = "Y" ]; then
+                return
+            fi
+            continue
+        fi
+        
+        # Expand tilde and make absolute path
+        RESULTS_PATH=$(eval echo "$RESULTS_PATH")
+        RESULTS_PATH=$(cd "$RESULTS_PATH" 2>/dev/null && pwd || echo "$RESULTS_PATH")
+        
+        if [ ! -d "$RESULTS_PATH" ]; then
+            echo "❌ 错误：目录不存在: $RESULTS_PATH"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
             fi
         else
-            echo "⚠ 未在 logs 目录中找到任何子目录"
-            RESULTS_PATH=""
+            echo "✓ 目录存在: $RESULTS_PATH"
+            break
         fi
-    else
-        echo "⚠ logs 目录不存在: $LOGS_BASE_DIR"
-        RESULTS_PATH=""
-    fi
-    
-    # If no path selected, ask user to input manually
-    if [ -z "$RESULTS_PATH" ]; then
-        echo ""
-        while true; do
-            read -p "请输入推理结果目录路径: " RESULTS_PATH
-            
-            if [ -z "$RESULTS_PATH" ]; then
-                echo "❌ 错误：路径不能为空"
-                read -p "是否返回菜单? (y/n): " return_menu
-                if [ "$return_menu" = "y" ] || [ "$return_menu" = "Y" ]; then
-                    return
-                fi
-                continue
-            fi
-            
-            if [ ! -d "$RESULTS_PATH" ]; then
-                echo "❌ 错误：目录不存在: $RESULTS_PATH"
-                read -p "重新输入? (y/n): " retry
-                if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                    return
-                fi
-            else
-                echo "✓ 目录存在: $RESULTS_PATH"
-                break
-            fi
-        done
-    fi
+    done
     
     echo ""
     echo "正在扫描推理结果目录..."
@@ -1026,13 +1352,13 @@ generate_report() {
     
     # Generate the report using Python script
     echo "正在生成报告..."
-    python3 "$PYTHON_SCRIPT" "$RESULTS_PATH"
+    python "$PYTHON_SCRIPT" "$RESULTS_PATH"
     
     # Get the new filename format
     DIR_NAME=$(basename "$RESULTS_PATH")
     OUTPUT_REPORT="$RESULTS_PATH/${DIR_NAME}_inference_report.csv"
     
-    # Add footer with timestamp (3 lines) if report exists
+    # Add footer with timestamp if report exists
     if [ -f "$OUTPUT_REPORT" ]; then
         echo "" >> "$OUTPUT_REPORT"
         echo "" >> "$OUTPUT_REPORT"
@@ -1048,19 +1374,13 @@ generate_report() {
     echo ""
     echo "✓ 报告已保存到: $OUTPUT_REPORT"
     echo ""
-    echo "报告格式说明："
-    echo "- 包含 PSNR、SSIM、LPIPS 三种指标"
-    echo "- 每种指标包含平均值和10个图片的单独数值"
-    echo "- 列包含 StableSR、edge loss 和 Epoch 结果"
-    echo "- 报告尾部包含生成时间（三行格式）"
+    echo "报告包含以下指标："
+    echo "  - PSNR（图像质量）"
+    echo "  - SSIM（结构相似度）"
+    echo "  - LPIPS（感知质量）"
+    echo "  - Edge PSNR（边缘质量）"
+    echo "  - Edge Overlap（边缘覆盖率）"
     echo ""
-    
-    # Show footer preview
-    if [ -f "$OUTPUT_REPORT" ]; then
-        echo "报告尾部信息："
-        tail -5 "$OUTPUT_REPORT"
-        echo ""
-    fi
 }
 
 # Main program
@@ -1077,12 +1397,9 @@ main() {
             inference_all_checkpoints
             ;;
         2)
-            inference_specific_edge
+            inference_specific_checkpoint
             ;;
         3)
-            inference_specific_no_edge
-            ;;
-        4)
             generate_report
             ;;
         0)
@@ -1092,7 +1409,7 @@ main() {
             ;;
         *)
             echo ""
-            echo "无效选项，请选择 0-4。"
+            echo "无效选项，请选择 0-3。"
             exit 1
             ;;
     esac

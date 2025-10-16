@@ -29,6 +29,8 @@ if project_root not in sys.path:
 
 # Import basicsr metrics
 from basicsr.metrics.psnr_ssim import calculate_psnr, calculate_ssim
+from basicsr.metrics.edge_l2_loss import EdgePSNRCalculator
+from basicsr.metrics.edge_overlap import EdgeOverlapCalculator
 
 # Suppress warnings for LPIPS
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.models._utils")
@@ -54,6 +56,12 @@ builtins.print = _original_print  # Restore print
 lpips_transform = transforms.Compose([
     transforms.ToTensor()  # Convert PIL to tensor [0,1]
 ])
+
+# Initialize Edge PSNR calculator
+edge_psnr_calculator = EdgePSNRCalculator()
+
+# Initialize Edge Overlap calculator
+edge_overlap_calculator = EdgeOverlapCalculator()
 
 
 def find_checkpoints(logs_dir, include_last=False):
@@ -176,6 +184,8 @@ def calculate_metrics(output_dir, gt_img_dir, results_dict):
         'average_psnr': 0.0,
         'average_ssim': 0.0,
         'average_lpips': 0.0,
+        'average_edge_psnr': 0.0,
+        'average_edge_overlap': 0.0,
         'total_images': 0
     }
     
@@ -185,6 +195,8 @@ def calculate_metrics(output_dir, gt_img_dir, results_dict):
     total_psnr = 0.0
     total_ssim = 0.0
     total_lpips = 0.0
+    total_edge_psnr = 0.0
+    total_edge_overlap = 0.0
     count = 0
     
     for gen_img_path in generated_images:
@@ -247,17 +259,45 @@ def calculate_metrics(output_dir, gt_img_dir, results_dict):
                 print(f"Warning: LPIPS calculation failed for {img_base_name}: {e}")
                 img_lpips = -1.0  # Mark as failed
         
+        # Calculate Edge PSNR
+        img_edge_psnr = 0.0
+        try:
+            # Calculate PSNR between edge maps of generated and GT images
+            img_edge_psnr = edge_psnr_calculator.calculate_from_arrays(
+                gen_img, gt_img, input_format='BGR'
+            )
+        except Exception as e:
+            print(f"Warning: Edge PSNR calculation failed for {img_base_name}: {e}")
+            img_edge_psnr = -1.0  # Mark as failed
+        
+        # Calculate Edge Overlap
+        img_edge_overlap = 0.0
+        try:
+            # Calculate overlap between edge maps of generated and GT images
+            img_edge_overlap = edge_overlap_calculator.calculate_from_arrays(
+                gen_img, gt_img, input_format='BGR'
+            )
+        except Exception as e:
+            print(f"Warning: Edge Overlap calculation failed for {img_base_name}: {e}")
+            img_edge_overlap = -1.0  # Mark as failed
+        
         metrics['images'].append({
             'image_name': img_name,
             'psnr': float(img_psnr),
             'ssim': float(img_ssim),
-            'lpips': float(img_lpips) if lpips_available else None
+            'lpips': float(img_lpips) if lpips_available else None,
+            'edge_psnr': float(img_edge_psnr),
+            'edge_overlap': float(img_edge_overlap)
         })
         
         total_psnr += img_psnr
         total_ssim += img_ssim
         if lpips_available and img_lpips >= 0:
             total_lpips += img_lpips
+        if img_edge_psnr >= 0:
+            total_edge_psnr += img_edge_psnr
+        if img_edge_overlap >= 0:
+            total_edge_overlap += img_edge_overlap
         count += 1
     
     if count > 0:
@@ -267,6 +307,8 @@ def calculate_metrics(output_dir, gt_img_dir, results_dict):
             metrics['average_lpips'] = total_lpips / count
         else:
             metrics['average_lpips'] = None
+        metrics['average_edge_psnr'] = total_edge_psnr / count
+        metrics['average_edge_overlap'] = total_edge_overlap / count
         metrics['total_images'] = count
         
         print(f"\n{'='*60}")
@@ -276,6 +318,8 @@ def calculate_metrics(output_dir, gt_img_dir, results_dict):
         print(f"  Average SSIM: {metrics['average_ssim']:.4f}")
         if lpips_available:
             print(f"  Average LPIPS: {metrics['average_lpips']:.4f}")
+        print(f"  Average Edge PSNR: {metrics['average_edge_psnr']:.4f} dB")
+        print(f"  Average Edge Overlap: {metrics['average_edge_overlap']:.4f}")
         print(f"{'='*60}\n")
         
         # Save to JSON
@@ -289,25 +333,29 @@ def calculate_metrics(output_dir, gt_img_dir, results_dict):
         with open(csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
             if lpips_available:
-                writer.writerow(['Image Name', 'PSNR (dB)', 'SSIM', 'LPIPS'])
+                writer.writerow(['Image Name', 'PSNR (dB)', 'SSIM', 'LPIPS', 'Edge PSNR (dB)', 'Edge Overlap'])
                 for img_metrics in metrics['images']:
                     writer.writerow([
                         img_metrics['image_name'],
                         f"{img_metrics['psnr']:.4f}",
                         f"{img_metrics['ssim']:.4f}",
-                        f"{img_metrics['lpips']:.4f}" if img_metrics['lpips'] is not None else 'N/A'
+                        f"{img_metrics['lpips']:.4f}" if img_metrics['lpips'] is not None else 'N/A',
+                        f"{img_metrics['edge_psnr']:.4f}",
+                        f"{img_metrics['edge_overlap']:.4f}"
                     ])
                 avg_lpips = f"{metrics['average_lpips']:.4f}" if metrics['average_lpips'] is not None else 'N/A'
-                writer.writerow(['Average', f"{metrics['average_psnr']:.4f}", f"{metrics['average_ssim']:.4f}", avg_lpips])
+                writer.writerow(['Average', f"{metrics['average_psnr']:.4f}", f"{metrics['average_ssim']:.4f}", avg_lpips, f"{metrics['average_edge_psnr']:.4f}", f"{metrics['average_edge_overlap']:.4f}"])
             else:
-                writer.writerow(['Image Name', 'PSNR (dB)', 'SSIM'])
+                writer.writerow(['Image Name', 'PSNR (dB)', 'SSIM', 'Edge PSNR (dB)', 'Edge Overlap'])
                 for img_metrics in metrics['images']:
                     writer.writerow([
                         img_metrics['image_name'],
                         f"{img_metrics['psnr']:.4f}",
-                        f"{img_metrics['ssim']:.4f}"
+                        f"{img_metrics['ssim']:.4f}",
+                        f"{img_metrics['edge_psnr']:.4f}",
+                        f"{img_metrics['edge_overlap']:.4f}"
                     ])
-                writer.writerow(['Average', f"{metrics['average_psnr']:.4f}", f"{metrics['average_ssim']:.4f}"])
+                writer.writerow(['Average', f"{metrics['average_psnr']:.4f}", f"{metrics['average_ssim']:.4f}", f"{metrics['average_edge_psnr']:.4f}", f"{metrics['average_edge_overlap']:.4f}"])
         print(f"Metrics saved to: {csv_path}")
         
         return metrics

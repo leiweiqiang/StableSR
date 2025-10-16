@@ -9,6 +9,7 @@ import os
 import json
 import csv
 import argparse
+import re
 from pathlib import Path
 from collections import defaultdict
 import sys
@@ -92,6 +93,8 @@ def collect_all_metrics(results_path):
         avg_psnr = data.get('average_psnr')
         avg_ssim = data.get('average_ssim')
         avg_lpips = data.get('average_lpips')
+        avg_edge_psnr = data.get('average_edge_psnr')
+        avg_edge_overlap = data.get('average_edge_overlap')
         
         if avg_psnr is not None:
             metrics_data['PSNR'][column_name] = {'Average': avg_psnr}
@@ -99,6 +102,10 @@ def collect_all_metrics(results_path):
             metrics_data['SSIM'][column_name] = {'Average': avg_ssim}
         if avg_lpips is not None:
             metrics_data['LPIPS'][column_name] = {'Average': avg_lpips}
+        if avg_edge_psnr is not None:
+            metrics_data['Edge PSNR'][column_name] = {'Average': avg_edge_psnr}
+        if avg_edge_overlap is not None:
+            metrics_data['Edge Overlap'][column_name] = {'Average': avg_edge_overlap}
         
         # Extract individual image values
         for img_data in data.get('images', []):
@@ -111,6 +118,8 @@ def collect_all_metrics(results_path):
             psnr_val = img_data.get('psnr')
             ssim_val = img_data.get('ssim')
             lpips_val = img_data.get('lpips')
+            edge_psnr_val = img_data.get('edge_psnr')
+            edge_overlap_val = img_data.get('edge_overlap')
             
             if psnr_val is not None:
                 if 'PSNR' not in metrics_data:
@@ -132,6 +141,20 @@ def collect_all_metrics(results_path):
                 if column_name not in metrics_data['LPIPS']:
                     metrics_data['LPIPS'][column_name] = {}
                 metrics_data['LPIPS'][column_name][img_name] = lpips_val
+            
+            if edge_psnr_val is not None:
+                if 'Edge PSNR' not in metrics_data:
+                    metrics_data['Edge PSNR'] = {}
+                if column_name not in metrics_data['Edge PSNR']:
+                    metrics_data['Edge PSNR'][column_name] = {}
+                metrics_data['Edge PSNR'][column_name][img_name] = edge_psnr_val
+            
+            if edge_overlap_val is not None:
+                if 'Edge Overlap' not in metrics_data:
+                    metrics_data['Edge Overlap'] = {}
+                if column_name not in metrics_data['Edge Overlap']:
+                    metrics_data['Edge Overlap'][column_name] = {}
+                metrics_data['Edge Overlap'][column_name][img_name] = edge_overlap_val
     
     return metrics_data, sorted(image_files)
 
@@ -147,70 +170,90 @@ def format_value(value):
 def generate_csv_report(metrics_data, image_files, output_path):
     """Generate the final CSV report."""
     
-    # Define column order (based on the image format)
-    # For each epoch: edge → no edge → dummy edge
-    column_order = [
-        "StableSR",
-        # Epoch 47
-        "Epoch 47 (edge)",
-        "Epoch 47 (no edge)",
-        "Epoch 47 (dummy edge)",
-        # Epoch 95
-        "Epoch 95 (edge)", 
-        "Epoch 95 (no edge)",
-        "Epoch 95 (dummy edge)",
-        # Epoch 142
-        "Epoch 142 (edge)",
-        "Epoch 142 (no edge)",
-        "Epoch 142 (dummy edge)",
-        # Epoch 143
-        "Epoch 143 (edge)",
-        "Epoch 143 (no edge)",
-        "Epoch 143 (dummy edge)",
-        # Epoch 190
-        "Epoch 190 (edge)",
-        "Epoch 190 (no edge)",
-        "Epoch 190 (dummy edge)",
-        # Epoch 238
-        "Epoch 238 (edge)",
-        "Epoch 238 (no edge)",
-        "Epoch 238 (dummy edge)",
-        # Epoch 285
-        "Epoch 285 (edge)",
-        "Epoch 285 (no edge)",
-        "Epoch 285 (dummy edge)"
-    ]
+    # Automatically build column order by extracting and sorting epochs
+    # Collect all unique epochs and edge types
+    epoch_info = {}  # {epoch_num: {edge_type: column_name}}
+    stablesr_col = None
     
-    # Find columns that actually have data
-    columns_with_data = set()
     for metric_type in metrics_data:
         for column in metrics_data[metric_type]:
-            # Check if this column has any non-empty values
-            has_data = False
-            if "Average" in metrics_data[metric_type][column]:
-                avg_val = metrics_data[metric_type][column]["Average"]
-                if avg_val != "" and avg_val is not None:
-                    has_data = True
+            if column == "StableSR":
+                stablesr_col = column
+                continue
             
-            if not has_data:
-                # Check individual image data
+            # Try to extract epoch number from column name
+            # Format: "Epoch X (edge_type)" or "Epoch X"
+            match = re.search(r'Epoch\s+(\d+)', column)
+            if match:
+                epoch_num = int(match.group(1))
+                
+                # Extract edge type
+                if "(edge)" in column or "(no edge)" in column or "(dummy edge)" in column:
+                    if "(edge)" in column and "(no edge)" not in column and "(dummy edge)" not in column:
+                        edge_type = "edge"
+                    elif "(no edge)" in column:
+                        edge_type = "no edge"
+                    elif "(dummy edge)" in column:
+                        edge_type = "dummy edge"
+                    else:
+                        edge_type = "unknown"
+                else:
+                    edge_type = "default"
+                
+                if epoch_num not in epoch_info:
+                    epoch_info[epoch_num] = {}
+                epoch_info[epoch_num][edge_type] = column
+    
+    # Build column order: StableSR first, then epochs in ascending order
+    # For each epoch: edge → no edge → dummy edge
+    column_order = []
+    
+    if stablesr_col:
+        column_order.append(stablesr_col)
+    
+    # Sort epochs numerically
+    for epoch_num in sorted(epoch_info.keys()):
+        edge_types_order = ["edge", "no edge", "dummy edge", "default"]
+        for edge_type in edge_types_order:
+            if edge_type in epoch_info[epoch_num]:
+                column_order.append(epoch_info[epoch_num][edge_type])
+    
+    # Add any columns not matched above
+    all_columns = set()
+    for metric_type in metrics_data:
+        all_columns.update(metrics_data[metric_type].keys())
+    
+    for col in sorted(all_columns):
+        if col not in column_order:
+            column_order.append(col)
+    
+    # Filter column_order to only include columns that have data
+    final_columns = []
+    for col in column_order:
+        # Check if this column has data in any metric
+        has_data = False
+        for metric_type in metrics_data:
+            if col in metrics_data[metric_type]:
+                # Check if has average or any image data
+                if "Average" in metrics_data[metric_type][col]:
+                    avg_val = metrics_data[metric_type][col]["Average"]
+                    if avg_val != "" and avg_val is not None:
+                        has_data = True
+                        break
+                
+                # Check individual images
                 for img_file in image_files:
-                    if img_file in metrics_data[metric_type][column]:
-                        val = metrics_data[metric_type][column][img_file]
+                    if img_file in metrics_data[metric_type][col]:
+                        val = metrics_data[metric_type][col][img_file]
                         if val != "" and val is not None:
                             has_data = True
                             break
-            
-            if has_data:
-                columns_with_data.add(column)
-    
-    # Build final column list based on predefined order, only including columns with data
-    final_columns = []
-    for col in column_order:
-        if col in columns_with_data:
+                
+                if has_data:
+                    break
+        
+        if has_data:
             final_columns.append(col)
-            columns_with_data.remove(col)
-    final_columns.extend(sorted(columns_with_data))
     
     # Create two-row header structure
     def create_header_rows():
@@ -253,7 +296,7 @@ def generate_csv_report(metrics_data, image_files, output_path):
         writer.writerow(second_header)
         
         # Write data for each metric type
-        metric_types = ["PSNR", "SSIM", "LPIPS"]
+        metric_types = ["PSNR", "SSIM", "LPIPS", "Edge PSNR", "Edge Overlap"]
         for i, metric_type in enumerate(metric_types):
             if metric_type not in metrics_data:
                 continue
