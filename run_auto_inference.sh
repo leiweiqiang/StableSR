@@ -637,7 +637,31 @@ inference_all_checkpoints() {
         echo "   每个GPU将处理约 $((($EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
         echo ""
         
-        cat "$EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_task_with_gpu '{}' 'edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' ''"
+        # Pure bash parallel execution
+        RUNNING_JOBS=0
+        while IFS='|' read -r CKPT_PATH GPU_ID TASK_IDX; do
+            # Wait if we've reached the max number of parallel jobs
+            while [ "$RUNNING_JOBS" -ge "$NUM_THREADS" ]; do
+                wait -n
+                ((RUNNING_JOBS--))
+            done
+            
+            # Start a new background job
+            (
+                # Add staggered start delay
+                if [ -n "$TASK_IDX" ] && [ "$TASK_IDX" -gt 0 ]; then
+                    sleep $(echo "scale=2; $TASK_IDX * 0.5" | bc 2>/dev/null || echo "0")
+                fi
+                
+                process_single_inference "$CKPT_PATH" "edge" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
+                    "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "$ENABLE_METRICS_RECALC" "" "$GPU_ID"
+            ) &
+            
+            ((RUNNING_JOBS++))
+        done < "$EDGE_TASK_FILE"
+        
+        # Wait for all remaining jobs to finish
+        wait
     else
         echo "没有需要处理的任务"
     fi
@@ -701,7 +725,31 @@ inference_all_checkpoints() {
         echo "   每个GPU将处理约 $((($NO_EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
         echo ""
         
-        cat "$NO_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_task_with_gpu '{}' 'no_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' ''"
+        # Pure bash parallel execution
+        RUNNING_JOBS=0
+        while IFS='|' read -r CKPT_PATH GPU_ID TASK_IDX; do
+            # Wait if we've reached the max number of parallel jobs
+            while [ "$RUNNING_JOBS" -ge "$NUM_THREADS" ]; do
+                wait -n
+                ((RUNNING_JOBS--))
+            done
+            
+            # Start a new background job
+            (
+                # Add staggered start delay
+                if [ -n "$TASK_IDX" ] && [ "$TASK_IDX" -gt 0 ]; then
+                    sleep $(echo "scale=2; $TASK_IDX * 0.5" | bc 2>/dev/null || echo "0")
+                fi
+                
+                process_single_inference "$CKPT_PATH" "no_edge" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
+                    "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "$ENABLE_METRICS_RECALC" "" "$GPU_ID"
+            ) &
+            
+            ((RUNNING_JOBS++))
+        done < "$NO_EDGE_TASK_FILE"
+        
+        # Wait for all remaining jobs to finish
+        wait
     else
         echo "没有需要处理的任务"
     fi
@@ -766,7 +814,31 @@ inference_all_checkpoints() {
         echo "   每个GPU将处理约 $((($DUMMY_EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
         echo ""
         
-        cat "$DUMMY_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_task_with_gpu '{}' 'dummy_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' '$DUMMY_EDGE_PATH'"
+        # Pure bash parallel execution
+        RUNNING_JOBS=0
+        while IFS='|' read -r CKPT_PATH GPU_ID TASK_IDX; do
+            # Wait if we've reached the max number of parallel jobs
+            while [ "$RUNNING_JOBS" -ge "$NUM_THREADS" ]; do
+                wait -n
+                ((RUNNING_JOBS--))
+            done
+            
+            # Start a new background job
+            (
+                # Add staggered start delay
+                if [ -n "$TASK_IDX" ] && [ "$TASK_IDX" -gt 0 ]; then
+                    sleep $(echo "scale=2; $TASK_IDX * 0.5" | bc 2>/dev/null || echo "0")
+                fi
+                
+                process_single_inference "$CKPT_PATH" "dummy_edge" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
+                    "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "$ENABLE_METRICS_RECALC" "$DUMMY_EDGE_PATH" "$GPU_ID"
+            ) &
+            
+            ((RUNNING_JOBS++))
+        done < "$DUMMY_EDGE_TASK_FILE"
+        
+        # Wait for all remaining jobs to finish
+        wait
     else
         echo "没有需要处理的任务"
     fi
