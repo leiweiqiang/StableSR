@@ -501,12 +501,27 @@ inference_all_checkpoints() {
         echo ""
     fi
     
-    # Ask for number of parallel threads
+    # Ask for GPU selection and parallel threads
     echo ""
     echo "=================================================="
     echo "  并行处理设置"
     echo "=================================================="
     echo ""
+    
+    # Ask for GPU selection
+    echo "请选择要使用的GPU（多个GPU用逗号分隔）"
+    echo "例如：0,1,2,3 表示使用GPU 0、1、2、3"
+    echo ""
+    read -p "请输入GPU编号 [默认: 0,1,2,3,4,5,6,7]: " GPU_DEVICES
+    GPU_DEVICES="${GPU_DEVICES:-0,1,2,3,4,5,6,7}"
+    
+    # Export CUDA_VISIBLE_DEVICES for subprocess access
+    export CUDA_VISIBLE_DEVICES="$GPU_DEVICES"
+    
+    echo "✓ 将使用GPU: $GPU_DEVICES"
+    echo ""
+    
+    # Ask for number of parallel threads
     echo "并行处理可以同时运行多个推理任务，加快处理速度"
     echo "建议根据GPU数量和显存大小设置线程数"
     echo ""
