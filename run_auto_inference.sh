@@ -197,6 +197,31 @@ process_single_inference() {
 # Export the function so it can be used by parallel processes
 export -f process_single_inference
 
+# Wrapper function to call process_single_inference with task file line
+process_task_with_gpu() {
+    local TASK_LINE="$1"
+    local MODE="$2"
+    local USER_LOGS_DIR="$3"
+    local OUTPUT_BASE="$4"
+    local SELECTED_DIR_NAME="$5"
+    local INIT_IMG="$6"
+    local GT_IMG="$7"
+    local CONFIG="$8"
+    local VQGAN_CKPT="$9"
+    local ENABLE_METRICS_RECALC="${10}"
+    local DUMMY_EDGE_PATH="${11}"
+    
+    # Parse task line: checkpoint_path|gpu_id
+    local CKPT_PATH=$(echo "$TASK_LINE" | cut -d'|' -f1)
+    local GPU_ID=$(echo "$TASK_LINE" | cut -d'|' -f2)
+    
+    # Call the main function with parsed values
+    process_single_inference "$CKPT_PATH" "$MODE" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
+        "$INIT_IMG" "$GT_IMG" "$CONFIG" "$VQGAN_CKPT" "$ENABLE_METRICS_RECALC" "$DUMMY_EDGE_PATH" "$GPU_ID"
+}
+
+export -f process_task_with_gpu
+
 # Function for mode 1: Inference all checkpoints
 inference_all_checkpoints() {
     echo ""
@@ -601,11 +626,7 @@ inference_all_checkpoints() {
     echo ""
     
     if [ "$EDGE_TASK_COUNT" -gt 0 ]; then
-        cat "$EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c '
-            CKPT_PATH=$(echo {} | cut -d"|" -f1)
-            GPU_ID=$(echo {} | cut -d"|" -f2)
-            process_single_inference "$CKPT_PATH" "edge" "'"$USER_LOGS_DIR"'" "'"$OUTPUT_BASE"'" "'"$SELECTED_DIR_NAME"'" "'"$DEFAULT_INIT_IMG"'" "'"$DEFAULT_GT_IMG"'" "'"$CONFIG"'" "'"$VQGAN_CKPT"'" "'"$ENABLE_METRICS_RECALC"'" "" "$GPU_ID"
-        '
+        cat "$EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_task_with_gpu '{}' 'edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' ''"
     else
         echo "没有需要处理的任务"
     fi
@@ -664,11 +685,7 @@ inference_all_checkpoints() {
     echo ""
     
     if [ "$NO_EDGE_TASK_COUNT" -gt 0 ]; then
-        cat "$NO_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c '
-            CKPT_PATH=$(echo {} | cut -d"|" -f1)
-            GPU_ID=$(echo {} | cut -d"|" -f2)
-            process_single_inference "$CKPT_PATH" "no_edge" "'"$USER_LOGS_DIR"'" "'"$OUTPUT_BASE"'" "'"$SELECTED_DIR_NAME"'" "'"$DEFAULT_INIT_IMG"'" "'"$DEFAULT_GT_IMG"'" "'"$CONFIG"'" "'"$VQGAN_CKPT"'" "'"$ENABLE_METRICS_RECALC"'" "" "$GPU_ID"
-        '
+        cat "$NO_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_task_with_gpu '{}' 'no_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' ''"
     else
         echo "没有需要处理的任务"
     fi
@@ -728,11 +745,7 @@ inference_all_checkpoints() {
     echo ""
     
     if [ "$DUMMY_EDGE_TASK_COUNT" -gt 0 ]; then
-        cat "$DUMMY_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c '
-            CKPT_PATH=$(echo {} | cut -d"|" -f1)
-            GPU_ID=$(echo {} | cut -d"|" -f2)
-            process_single_inference "$CKPT_PATH" "dummy_edge" "'"$USER_LOGS_DIR"'" "'"$OUTPUT_BASE"'" "'"$SELECTED_DIR_NAME"'" "'"$DEFAULT_INIT_IMG"'" "'"$DEFAULT_GT_IMG"'" "'"$CONFIG"'" "'"$VQGAN_CKPT"'" "'"$ENABLE_METRICS_RECALC"'" "'"$DUMMY_EDGE_PATH"'" "$GPU_ID"
-        '
+        cat "$DUMMY_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_task_with_gpu '{}' 'dummy_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' '$DUMMY_EDGE_PATH'"
     else
         echo "没有需要处理的任务"
     fi
