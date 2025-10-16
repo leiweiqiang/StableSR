@@ -1416,7 +1416,7 @@ class EncoderUNetModelWT(nn.Module):
             num_heads_upsample = num_heads
         
         self.edge_processor = EdgeMapProcessor()
-        self.in_channels = 8
+        self.in_channels = in_channels
         self.model_channels = model_channels
         self.out_channels = out_channels
         self.num_res_blocks = num_res_blocks
@@ -1436,6 +1436,8 @@ class EncoderUNetModelWT(nn.Module):
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
+
+        print(f"in_channels: {in_channels}")
 
         self.input_blocks = nn.ModuleList(
             [

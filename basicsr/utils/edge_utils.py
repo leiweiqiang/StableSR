@@ -77,23 +77,11 @@ class EdgeMapGenerator:
         else:  # RGB
             img_gray = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2GRAY)
         
-        # 应用高斯模糊降噪
-        img_blurred = cv2.GaussianBlur(
-            img_gray, 
-            self.gaussian_kernel_size, 
-            self.gaussian_sigma
-        )
+        # Apply Gaussian blur (reduces noise, improves edge detection)
+        blurred = cv2.GaussianBlur(img_gray, (5, 5), 1.4)
         
-        # 计算自适应Canny阈值
-        median = np.median(img_blurred)
-        lower_thresh = int(max(0, self.canny_threshold_lower_factor * median))
-        upper_thresh = int(min(255, self.canny_threshold_upper_factor * median))
-        
-        # 应用Canny边缘检测
-        edges = cv2.Canny(img_blurred, threshold1=lower_thresh, threshold2=upper_thresh)
-        
-        # 应用形态学操作清理边缘
-        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, self.morph_kernel)
+        # Apply Canny edge detector with fixed thresholds
+        edges = cv2.Canny(blurred, threshold1=100, threshold2=200)
         
         # 转换为3通道
         if input_format == 'BGR':

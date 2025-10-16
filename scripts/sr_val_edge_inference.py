@@ -31,7 +31,6 @@ import os
 import sys
 import glob
 import shutil
-import inspect
 from datetime import datetime
 
 # Ensure we import from the current project directory
@@ -65,12 +64,9 @@ from scripts.wavelet_color_fix import wavelet_reconstruction, adaptive_instance_
 import cv2
 from basicsr.utils.edge_utils import EdgeMapGenerator
 
-# Create global EdgeMapGenerator instance with more sensitive parameters
-# 降低阈值因子以检测更多边缘 (原始: 0.7/1.3, 改进: 0.4/0.9)
-edge_generator = EdgeMapGenerator(
-    canny_threshold_lower_factor=0.4,  # 从0.7降到0.4，检测更多边缘
-    canny_threshold_upper_factor=0.9   # 从1.3降到0.9，检测更多边缘
-)
+# Create global EdgeMapGenerator instance
+# 使用固定Canny阈值(100, 200)确保一致的边缘检测
+edge_generator = EdgeMapGenerator()
 
 
 class Logger(object):
@@ -462,16 +458,6 @@ def main():
     model = load_model_from_config(config, f"{opt.ckpt}")
     model = model.to(device)
     print('✓ Diffusion model loaded\n')
-    
-    # Check if model supports edge processing
-    model_supports_edge = hasattr(model, 'use_edge_processing') and model.use_edge_processing
-    if opt.use_edge_processing:
-        if model_supports_edge:
-            print("✓ Model supports edge processing - edge inference will be used\n")
-        else:
-            print("⚠ Warning: --use_edge_processing flag is set, but model does not support edge processing")
-            print("  Edge maps will be generated and saved, but may not affect results")
-            print("  To use edge processing, ensure config file has use_edge_processing: true\n")
 
     # Create output directory
     os.makedirs(opt.outdir, exist_ok=True)
@@ -575,17 +561,6 @@ def main():
     untrainable_params = sum(p.numel() for p in untrain_paramlist)
     print(f"  Trainable params: {trainable_params:,}")
     print(f"  Untrainable params: {untrainable_params:,}\n")
-
-    # Check if model.sample supports edge_map parameter
-    model_sample_supports_edge = False
-    if opt.use_edge_processing:
-        sample_sig = inspect.signature(model.sample)
-        model_sample_supports_edge = 'edge_map' in sample_sig.parameters
-        if model_sample_supports_edge:
-            print("✓ model.sample() supports edge_map parameter - will use edge-enhanced sampling\n")
-        else:
-            print("⚠ model.sample() does not support edge_map parameter")
-            print("  Edge maps will be saved but not used in sampling\n")
     
     # Start inference
     print(f"{'=' * 80}")
@@ -721,27 +696,16 @@ def main():
                                 Image.fromarray(edge_map_np.astype(np.uint8)).save(edge_map_save_path)
                         
                         # Sample with edge maps
-                        if model_sample_supports_edge:
-                            samples, _ = model.sample(
-                                cond=semantic_c,
-                                struct_cond=init_latent,
-                                batch_size=init_image.size(0),
-                                timesteps=opt.ddpm_steps,
-                                time_replace=opt.ddpm_steps,
-                                x_T=x_T,
-                                return_intermediates=True,
-                                edge_map=edge_maps
-                            )
-                        else:
-                            samples, _ = model.sample(
-                                cond=semantic_c,
-                                struct_cond=init_latent,
-                                batch_size=init_image.size(0),
-                                timesteps=opt.ddpm_steps,
-                                time_replace=opt.ddpm_steps,
-                                x_T=x_T,
-                                return_intermediates=True
-                            )
+                        samples, _ = model.sample(
+                            cond=semantic_c,
+                            struct_cond=init_latent,
+                            batch_size=init_image.size(0),
+                            timesteps=opt.ddpm_steps,
+                            time_replace=opt.ddpm_steps,
+                            x_T=x_T,
+                            return_intermediates=True,
+                            edge_map=edge_maps
+                        )
                     else:
                         # Standard sampling without edge processing
                         samples, _ = model.sample(
