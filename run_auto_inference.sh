@@ -43,7 +43,7 @@ EOF
 export LOGS_DIR="logs"
 export CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_800.yaml"
 export VQGAN_CKPT="/stablesr_dataset/checkpoints/vqgan_cfw_00011.ckpt"
-export DDPM_STEPS=200
+export DDPM_STEPS=2
 export DEC_W=0
 export SEED=42
 export N_SAMPLES=1

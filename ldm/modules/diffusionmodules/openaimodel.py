@@ -1366,11 +1366,10 @@ class EdgeMapProcessor(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-
         self.to_four = nn.Conv2d(128, 4, kernel_size=1, bias=True)
 
         self.pool = nn.AdaptiveAvgPool2d((64, 64))
-        self.merge = nn.Conv2d(8, 4, kernel_size=1, bias=True)
+        # self.merge = nn.Conv2d(8, 4, kernel_size=1, bias=True)
 
     def forward(self, edge_map, x):
         """
@@ -1380,7 +1379,7 @@ class EdgeMapProcessor(nn.Module):
         feat = self.backbone(edge_map)          # (B, 128, H', W')
         feat4 = self.to_four(feat)       # (B, 4,   H', W')
         out = self.pool(feat4)           # (B, 4,   64, 64)
-        out = self.merge(th.cat([out, x], dim=1))
+        # out = self.merge(th.cat([out, x], dim=1))
         return out
 
 class EncoderUNetModelWT(nn.Module):
@@ -1573,12 +1572,12 @@ class EncoderUNetModelWT(nn.Module):
         edge_feat = self.edge_processor(edge_map=edge_map, x=x)  # (N, 4, 64, 64)
         
         # Resize edge features to match the latent spatial size
-        # if edge_feat.size(-1) != x.size(-1) or edge_feat.size(-2) != x.size(-2):
-        #    edge_feat = F.interpolate(edge_feat, size=(x.size(-2), x.size(-1)), mode='bilinear', align_corners=False)
+        if edge_feat.size(-1) != x.size(-1) or edge_feat.size(-2) != x.size(-2):
+            edge_feat = th.nn.functional.interpolate(edge_feat, size=(x.size(-2), x.size(-1)), mode='bilinear', align_corners=False)
         
         # Concatenate x and edge features
-        # h_input = th.cat([x, edge_feat], dim=1)  # (N, 8, H, W)
-        h_input = edge_feat
+        h_input = th.cat([x, edge_feat], dim=1)  # (N, 8, H, W)
+        # h_input = edge_feat
         
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
