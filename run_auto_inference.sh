@@ -582,15 +582,19 @@ inference_all_checkpoints() {
     echo "✓ 将使用 $NUM_THREADS 个并行线程"
     echo ""
     echo "════════════════════════════════════════════════"
-    echo "  ⚡ 开始并行推理任务"
+    echo "  ⚡ 开始并行推理任务（跨模式并行）"
     echo "  📊 GPU: $GPU_DEVICES"
     echo "  🔢 并行数: $NUM_THREADS"
+    echo "  ✨ Edge/No-Edge/Dummy-Edge 可同时运行"
     echo "════════════════════════════════════════════════"
     echo ""
     
-    # Prepare task list for edge mode with GPU assignment
-    EDGE_TASK_FILE=$(mktemp)
+    # Create unified task list for ALL modes (edge, no_edge, dummy_edge)
+    ALL_TASKS_FILE=$(mktemp)
+    DUMMY_EDGE_PATH="/stablesr_dataset/default_edge.png"
     TASK_INDEX=0
+    
+    echo "准备跨模式任务列表..."
     
     for CKPT_FILE in "${CKPT_FILES[@]}"; do
         # Extract epoch number from checkpoint filename
@@ -616,41 +620,65 @@ inference_all_checkpoints() {
         fi
         
         if [ "$EPOCH_SELECTED" = true ]; then
-            # Assign GPU in round-robin fashion
-            GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
-            echo "$CKPT_FILE|$GPU_ID|$TASK_INDEX" >> "$EDGE_TASK_FILE"
-            ((TASK_INDEX++))
+            # Check all 3 modes and add tasks for those that need processing
+            # Format: checkpoint|mode|gpu_id|task_idx|extra_path
+            
+            # Check edge mode
+            OUTPUT_CHECK_EDGE="$OUTPUT_BASE/$SELECTED_DIR_NAME/edge/epochs_$((10#$EPOCH_NUM))"
+            if [ ! -d "$OUTPUT_CHECK_EDGE" ] || [ $(find "$OUTPUT_CHECK_EDGE" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l) -eq 0 ]; then
+                GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
+                echo "$CKPT_FILE|edge|$GPU_ID|$TASK_INDEX|" >> "$ALL_TASKS_FILE"
+                ((TASK_INDEX++))
+            fi
+            
+            # Check no_edge mode
+            OUTPUT_CHECK_NO_EDGE="$OUTPUT_BASE/$SELECTED_DIR_NAME/no_edge/epochs_$((10#$EPOCH_NUM))"
+            if [ ! -d "$OUTPUT_CHECK_NO_EDGE" ] || [ $(find "$OUTPUT_CHECK_NO_EDGE" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l) -eq 0 ]; then
+                GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
+                echo "$CKPT_FILE|no_edge|$GPU_ID|$TASK_INDEX|" >> "$ALL_TASKS_FILE"
+                ((TASK_INDEX++))
+            fi
+            
+            # Check dummy_edge mode
+            OUTPUT_CHECK_DUMMY="$OUTPUT_BASE/$SELECTED_DIR_NAME/dummy_edge/epochs_$((10#$EPOCH_NUM))"
+            if [ ! -d "$OUTPUT_CHECK_DUMMY" ] || [ $(find "$OUTPUT_CHECK_DUMMY" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l) -eq 0 ]; then
+                GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
+                echo "$CKPT_FILE|dummy_edge|$GPU_ID|$TASK_INDEX|$DUMMY_EDGE_PATH" >> "$ALL_TASKS_FILE"
+                ((TASK_INDEX++))
+            fi
         fi
     done
     
-    # Count total tasks for edge mode
-    EDGE_TASK_COUNT=$(wc -l < "$EDGE_TASK_FILE")
+    # Count total tasks across all modes
+    TOTAL_TASK_COUNT=$(wc -l < "$ALL_TASKS_FILE" 2>/dev/null || echo 0)
     
-    # Process edge mode checkpoints in parallel
-    echo "正在运行 EDGE 模式推理（并行数：$NUM_THREADS，任务数：$EDGE_TASK_COUNT）..."
+    echo ""
+    echo "════════════════════════════════════════════════"
+    echo "  📋 总任务数: $TOTAL_TASK_COUNT (跨3种模式)"
     echo "════════════════════════════════════════════════"
     echo ""
     
-    if [ "$EDGE_TASK_COUNT" -gt 0 ]; then
-        echo "⏱️  并行模式启动中..."
-        echo "   预计同时运行 $NUM_THREADS 个任务，分布在 $NUM_GPUS 个GPU上"
-        echo "   每个GPU将处理约 $((($EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
+    if [ "$TOTAL_TASK_COUNT" -gt 0 ]; then
+        echo "⏱️  跨模式并行处理启动中..."
+        echo "   同时运行最多 $NUM_THREADS 个任务，分布在 $NUM_GPUS 个GPU上"
+        echo "   每个GPU将处理约 $((($TOTAL_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
+        echo "   ✨ 同一checkpoint的不同模式可以并行运行！"
         echo ""
         
         # Pure bash parallel execution - batch processing
         JOB_COUNT=0
         PIDS=()
         
-        while IFS='|' read -r CKPT_PATH GPU_ID TASK_IDX; do
+        while IFS='|' read -r CKPT_PATH MODE GPU_ID TASK_IDX EXTRA_PATH; do
             # Start background job
             (
                 # Add small staggered start delay
                 if [ -n "$TASK_IDX" ] && [ "$TASK_IDX" -gt 0 ]; then
-                    sleep $(awk "BEGIN {print $TASK_IDX * 0.2}")
+                    sleep $(awk "BEGIN {print $TASK_IDX * 0.2}" 2>/dev/null || echo 0)
                 fi
                 
-                process_single_inference "$CKPT_PATH" "edge" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
-                    "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "$ENABLE_METRICS_RECALC" "" "$GPU_ID"
+                process_single_inference "$CKPT_PATH" "$MODE" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
+                    "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "$ENABLE_METRICS_RECALC" "$EXTRA_PATH" "$GPU_ID"
             ) &
             
             PIDS+=($!)
@@ -658,38 +686,41 @@ inference_all_checkpoints() {
             
             # When we reach the batch size, wait for all jobs in this batch to complete
             if [ "$JOB_COUNT" -ge "$NUM_THREADS" ]; then
-                echo "  等待批次完成 ($JOB_COUNT 个任务)..."
+                echo "  ⏳ 等待批次完成 ($JOB_COUNT 个任务)..."
                 for pid in "${PIDS[@]}"; do
                     wait $pid 2>/dev/null
                 done
                 PIDS=()
                 JOB_COUNT=0
             fi
-        done < "$EDGE_TASK_FILE"
+        done < "$ALL_TASKS_FILE"
         
         # Wait for any remaining jobs
         if [ ${#PIDS[@]} -gt 0 ]; then
-            echo "  等待最后一批完成 (${#PIDS[@]} 个任务)..."
+            echo "  ⏳ 等待最后一批完成 (${#PIDS[@]} 个任务)..."
             for pid in "${PIDS[@]}"; do
                 wait $pid 2>/dev/null
             done
         fi
+        
+        echo ""
+        echo "════════════════════════════════════════════════"
+        echo "✅ 所有模式处理完成！"
+        echo "════════════════════════════════════════════════"
     else
-        echo "没有需要处理的任务"
+        echo "❌ 没有需要处理的任务（所有模式都已完成）"
     fi
     
-    rm -f "$EDGE_TASK_FILE"
-    
-    echo ""
-    echo "════════════════════════════════════════════════"
-    echo "EDGE 模式处理完成"
+    rm -f "$ALL_TASKS_FILE"
     
     echo ""
     echo "=================================================="
     echo ""
     
-    # Prepare task list for no-edge mode with GPU assignment
-    NO_EDGE_TASK_FILE=$(mktemp)
+    # Skip old separate mode processing - all modes now handled together above
+    # Jump directly to StableSR baseline
+    
+    # Dummy code to reach the right place
     TASK_INDEX=0
     
     for CKPT_FILE in "${CKPT_FILES[@]}"; do
