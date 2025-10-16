@@ -510,13 +510,13 @@ inference_all_checkpoints() {
     echo "并行处理可以同时运行多个推理任务，加快处理速度"
     echo "建议根据GPU数量和显存大小设置线程数"
     echo ""
-    read -p "请输入并行线程数 [默认: 20]: " NUM_THREADS
-    NUM_THREADS="${NUM_THREADS:-20}"
+    read -p "请输入并行线程数 [默认: 8]: " NUM_THREADS
+    NUM_THREADS="${NUM_THREADS:-8}"
     
     # Validate thread number
     if ! [[ "$NUM_THREADS" =~ ^[0-9]+$ ]] || [ "$NUM_THREADS" -lt 1 ]; then
-        echo "❌ 错误：线程数必须是正整数，使用默认值 20"
-        NUM_THREADS=20
+        echo "❌ 错误：线程数必须是正整数，使用默认值 8"
+        NUM_THREADS=8
     fi
     
     echo "✓ 将使用 $NUM_THREADS 个并行线程"
