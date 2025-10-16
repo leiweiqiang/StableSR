@@ -97,6 +97,10 @@ process_single_inference() {
     local VQGAN_CKPT="$9"
     local ENABLE_METRICS_RECALC="${10}"
     local DUMMY_EDGE_PATH="${11:-}"
+    local ASSIGNED_GPU="${12:-0}"
+    
+    # Set CUDA_VISIBLE_DEVICES to use only the assigned GPU
+    export CUDA_VISIBLE_DEVICES="$ASSIGNED_GPU"
     
     # Extract epoch number
     CKPT_BASENAME=$(basename "$CKPT_FILE")
@@ -154,7 +158,7 @@ process_single_inference() {
     
     # Run inference
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
-    echo "▶ 开始处理: [$MODE] epoch=$EPOCH_NUM" >&2
+    echo "▶ 开始处理: [$MODE] epoch=$EPOCH_NUM (GPU: $ASSIGNED_GPU)" >&2
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
     
     python scripts/auto_inference.py \
@@ -524,10 +528,11 @@ inference_all_checkpoints() {
     read -p "请输入GPU编号 [默认: 0,1,2,3,4,5,6,7]: " GPU_DEVICES
     GPU_DEVICES="${GPU_DEVICES:-0,1,2,3,4,5,6,7}"
     
-    # Export CUDA_VISIBLE_DEVICES for subprocess access
-    export CUDA_VISIBLE_DEVICES="$GPU_DEVICES"
+    # Convert GPU list to array
+    IFS=',' read -ra GPU_ARRAY <<< "$GPU_DEVICES"
+    NUM_GPUS=${#GPU_ARRAY[@]}
     
-    echo "✓ 将使用GPU: $GPU_DEVICES"
+    echo "✓ 将使用GPU: $GPU_DEVICES (共 $NUM_GPUS 个GPU)"
     echo ""
     
     # Ask for number of parallel threads
@@ -552,8 +557,9 @@ inference_all_checkpoints() {
     echo "════════════════════════════════════════════════"
     echo ""
     
-    # Prepare task list for edge mode
+    # Prepare task list for edge mode with GPU assignment
     EDGE_TASK_FILE=$(mktemp)
+    TASK_INDEX=0
     
     for CKPT_FILE in "${CKPT_FILES[@]}"; do
         # Extract epoch number from checkpoint filename
@@ -579,7 +585,10 @@ inference_all_checkpoints() {
         fi
         
         if [ "$EPOCH_SELECTED" = true ]; then
-            echo "$CKPT_FILE" >> "$EDGE_TASK_FILE"
+            # Assign GPU in round-robin fashion
+            GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
+            echo "$CKPT_FILE|$GPU_ID" >> "$EDGE_TASK_FILE"
+            ((TASK_INDEX++))
         fi
     done
     
@@ -592,7 +601,11 @@ inference_all_checkpoints() {
     echo ""
     
     if [ "$EDGE_TASK_COUNT" -gt 0 ]; then
-        cat "$EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC'"
+        cat "$EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c '
+            CKPT_PATH=$(echo {} | cut -d"|" -f1)
+            GPU_ID=$(echo {} | cut -d"|" -f2)
+            process_single_inference "$CKPT_PATH" "edge" "'"$USER_LOGS_DIR"'" "'"$OUTPUT_BASE"'" "'"$SELECTED_DIR_NAME"'" "'"$DEFAULT_INIT_IMG"'" "'"$DEFAULT_GT_IMG"'" "'"$CONFIG"'" "'"$VQGAN_CKPT"'" "'"$ENABLE_METRICS_RECALC"'" "" "$GPU_ID"
+        '
     else
         echo "没有需要处理的任务"
     fi
@@ -607,8 +620,9 @@ inference_all_checkpoints() {
     echo "=================================================="
     echo ""
     
-    # Prepare task list for no-edge mode
+    # Prepare task list for no-edge mode with GPU assignment
     NO_EDGE_TASK_FILE=$(mktemp)
+    TASK_INDEX=0
     
     for CKPT_FILE in "${CKPT_FILES[@]}"; do
         # Extract epoch number from checkpoint filename
@@ -634,7 +648,10 @@ inference_all_checkpoints() {
         fi
         
         if [ "$EPOCH_SELECTED" = true ]; then
-            echo "$CKPT_FILE" >> "$NO_EDGE_TASK_FILE"
+            # Assign GPU in round-robin fashion
+            GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
+            echo "$CKPT_FILE|$GPU_ID" >> "$NO_EDGE_TASK_FILE"
+            ((TASK_INDEX++))
         fi
     done
     
@@ -647,7 +664,11 @@ inference_all_checkpoints() {
     echo ""
     
     if [ "$NO_EDGE_TASK_COUNT" -gt 0 ]; then
-        cat "$NO_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'no_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC'"
+        cat "$NO_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c '
+            CKPT_PATH=$(echo {} | cut -d"|" -f1)
+            GPU_ID=$(echo {} | cut -d"|" -f2)
+            process_single_inference "$CKPT_PATH" "no_edge" "'"$USER_LOGS_DIR"'" "'"$OUTPUT_BASE"'" "'"$SELECTED_DIR_NAME"'" "'"$DEFAULT_INIT_IMG"'" "'"$DEFAULT_GT_IMG"'" "'"$CONFIG"'" "'"$VQGAN_CKPT"'" "'"$ENABLE_METRICS_RECALC"'" "" "$GPU_ID"
+        '
     else
         echo "没有需要处理的任务"
     fi
@@ -662,9 +683,10 @@ inference_all_checkpoints() {
     echo "=================================================="
     echo ""
     
-    # Prepare task list for dummy-edge mode
+    # Prepare task list for dummy-edge mode with GPU assignment
     DUMMY_EDGE_TASK_FILE=$(mktemp)
     DUMMY_EDGE_PATH="/stablesr_dataset/default_edge.png"
+    TASK_INDEX=0
     
     for CKPT_FILE in "${CKPT_FILES[@]}"; do
         # Extract epoch number from checkpoint filename
@@ -690,7 +712,10 @@ inference_all_checkpoints() {
         fi
         
         if [ "$EPOCH_SELECTED" = true ]; then
-            echo "$CKPT_FILE" >> "$DUMMY_EDGE_TASK_FILE"
+            # Assign GPU in round-robin fashion
+            GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
+            echo "$CKPT_FILE|$GPU_ID" >> "$DUMMY_EDGE_TASK_FILE"
+            ((TASK_INDEX++))
         fi
     done
     
@@ -703,7 +728,11 @@ inference_all_checkpoints() {
     echo ""
     
     if [ "$DUMMY_EDGE_TASK_COUNT" -gt 0 ]; then
-        cat "$DUMMY_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'dummy_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' '$DUMMY_EDGE_PATH'"
+        cat "$DUMMY_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c '
+            CKPT_PATH=$(echo {} | cut -d"|" -f1)
+            GPU_ID=$(echo {} | cut -d"|" -f2)
+            process_single_inference "$CKPT_PATH" "dummy_edge" "'"$USER_LOGS_DIR"'" "'"$OUTPUT_BASE"'" "'"$SELECTED_DIR_NAME"'" "'"$DEFAULT_INIT_IMG"'" "'"$DEFAULT_GT_IMG"'" "'"$CONFIG"'" "'"$VQGAN_CKPT"'" "'"$ENABLE_METRICS_RECALC"'" "'"$DUMMY_EDGE_PATH"'" "$GPU_ID"
+        '
     else
         echo "没有需要处理的任务"
     fi
