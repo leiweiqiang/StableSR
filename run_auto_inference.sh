@@ -43,7 +43,7 @@ EOF
 export LOGS_DIR="logs"
 export CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_800.yaml"
 export VQGAN_CKPT="/stablesr_dataset/checkpoints/vqgan_cfw_00011.ckpt"
-export DDPM_STEPS=1000
+export DDPM_STEPS=200
 export DEC_W=0
 export SEED=42
 export N_SAMPLES=1
@@ -211,9 +211,15 @@ process_task_with_gpu() {
     local ENABLE_METRICS_RECALC="${10}"
     local DUMMY_EDGE_PATH="${11}"
     
-    # Parse task line: checkpoint_path|gpu_id
+    # Parse task line: checkpoint_path|gpu_id|task_index
     local CKPT_PATH=$(echo "$TASK_LINE" | cut -d'|' -f1)
     local GPU_ID=$(echo "$TASK_LINE" | cut -d'|' -f2)
+    local TASK_INDEX=$(echo "$TASK_LINE" | cut -d'|' -f3)
+    
+    # Add staggered start delay to avoid resource contention (0.5s per task)
+    if [ -n "$TASK_INDEX" ] && [ "$TASK_INDEX" -gt 0 ]; then
+        sleep $(echo "scale=2; $TASK_INDEX * 0.5" | bc)
+    fi
     
     # Call the main function with parsed values
     process_single_inference "$CKPT_PATH" "$MODE" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
@@ -612,7 +618,7 @@ inference_all_checkpoints() {
         if [ "$EPOCH_SELECTED" = true ]; then
             # Assign GPU in round-robin fashion
             GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
-            echo "$CKPT_FILE|$GPU_ID" >> "$EDGE_TASK_FILE"
+            echo "$CKPT_FILE|$GPU_ID|$TASK_INDEX" >> "$EDGE_TASK_FILE"
             ((TASK_INDEX++))
         fi
     done
@@ -626,6 +632,11 @@ inference_all_checkpoints() {
     echo ""
     
     if [ "$EDGE_TASK_COUNT" -gt 0 ]; then
+        echo "⏱️  并行模式启动中..."
+        echo "   预计同时运行 $NUM_THREADS 个任务，分布在 $NUM_GPUS 个GPU上"
+        echo "   每个GPU将处理约 $((($EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
+        echo ""
+        
         cat "$EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_task_with_gpu '{}' 'edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' ''"
     else
         echo "没有需要处理的任务"
@@ -671,7 +682,7 @@ inference_all_checkpoints() {
         if [ "$EPOCH_SELECTED" = true ]; then
             # Assign GPU in round-robin fashion
             GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
-            echo "$CKPT_FILE|$GPU_ID" >> "$NO_EDGE_TASK_FILE"
+            echo "$CKPT_FILE|$GPU_ID|$TASK_INDEX" >> "$NO_EDGE_TASK_FILE"
             ((TASK_INDEX++))
         fi
     done
@@ -685,6 +696,11 @@ inference_all_checkpoints() {
     echo ""
     
     if [ "$NO_EDGE_TASK_COUNT" -gt 0 ]; then
+        echo "⏱️  并行模式启动中..."
+        echo "   预计同时运行 $NUM_THREADS 个任务，分布在 $NUM_GPUS 个GPU上"
+        echo "   每个GPU将处理约 $((($NO_EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
+        echo ""
+        
         cat "$NO_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_task_with_gpu '{}' 'no_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' ''"
     else
         echo "没有需要处理的任务"
@@ -731,7 +747,7 @@ inference_all_checkpoints() {
         if [ "$EPOCH_SELECTED" = true ]; then
             # Assign GPU in round-robin fashion
             GPU_ID=${GPU_ARRAY[$((TASK_INDEX % NUM_GPUS))]}
-            echo "$CKPT_FILE|$GPU_ID" >> "$DUMMY_EDGE_TASK_FILE"
+            echo "$CKPT_FILE|$GPU_ID|$TASK_INDEX" >> "$DUMMY_EDGE_TASK_FILE"
             ((TASK_INDEX++))
         fi
     done
@@ -745,6 +761,11 @@ inference_all_checkpoints() {
     echo ""
     
     if [ "$DUMMY_EDGE_TASK_COUNT" -gt 0 ]; then
+        echo "⏱️  并行模式启动中..."
+        echo "   预计同时运行 $NUM_THREADS 个任务，分布在 $NUM_GPUS 个GPU上"
+        echo "   每个GPU将处理约 $((($DUMMY_EDGE_TASK_COUNT + $NUM_GPUS - 1) / $NUM_GPUS)) 个任务"
+        echo ""
+        
         cat "$DUMMY_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_task_with_gpu '{}' 'dummy_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' '$DUMMY_EDGE_PATH'"
     else
         echo "没有需要处理的任务"
