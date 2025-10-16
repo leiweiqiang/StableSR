@@ -153,7 +153,10 @@ process_single_inference() {
     fi
     
     # Run inference
-    echo "→ [$MODE] 处理 epoch=$EPOCH_NUM" >&2
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+    echo "▶ 开始处理: [$MODE] epoch=$EPOCH_NUM" >&2
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+    
     python scripts/auto_inference.py \
         --ckpt "$CKPT_FILE" \
         --logs_dir "$USER_LOGS_DIR" \
@@ -170,13 +173,19 @@ process_single_inference() {
         --colorfix_type "$COLORFIX_TYPE" \
         --input_size $INPUT_SIZE \
         $EDGE_FLAGS \
-        --skip_existing 2>&1 | sed "s/^/[$MODE-$EPOCH_NUM] /" >&2
+        --skip_existing 2>&1 | while IFS= read -r line; do echo "  [$MODE-$EPOCH_NUM] $line" >&2; done
     
-    if [ $? -eq 0 ]; then
-        echo "✓ [$MODE] epoch=$EPOCH_NUM 完成" >&2
+    RESULT=${PIPESTATUS[0]}
+    
+    if [ $RESULT -eq 0 ]; then
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+        echo "✓ 完成处理: [$MODE] epoch=$EPOCH_NUM" >&2
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
         return 0
     else
-        echo "❌ [$MODE] epoch=$EPOCH_NUM 失败" >&2
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+        echo "❌ 处理失败: [$MODE] epoch=$EPOCH_NUM" >&2
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
         return 1
     fi
 }
@@ -536,7 +545,11 @@ inference_all_checkpoints() {
     
     echo "✓ 将使用 $NUM_THREADS 个并行线程"
     echo ""
-    echo "✓ 开始执行推理..."
+    echo "════════════════════════════════════════════════"
+    echo "  ⚡ 开始并行推理任务"
+    echo "  📊 GPU: $GPU_DEVICES"
+    echo "  🔢 并行数: $NUM_THREADS"
+    echo "════════════════════════════════════════════════"
     echo ""
     
     # Prepare task list for edge mode
@@ -570,15 +583,24 @@ inference_all_checkpoints() {
         fi
     done
     
+    # Count total tasks for edge mode
+    EDGE_TASK_COUNT=$(wc -l < "$EDGE_TASK_FILE")
+    
     # Process edge mode checkpoints in parallel
-    echo "正在运行 EDGE 模式推理（并行数：$NUM_THREADS）..."
+    echo "正在运行 EDGE 模式推理（并行数：$NUM_THREADS，任务数：$EDGE_TASK_COUNT）..."
+    echo "════════════════════════════════════════════════"
     echo ""
     
-    cat "$EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC'"
+    if [ "$EDGE_TASK_COUNT" -gt 0 ]; then
+        cat "$EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC'"
+    else
+        echo "没有需要处理的任务"
+    fi
     
     rm -f "$EDGE_TASK_FILE"
     
     echo ""
+    echo "════════════════════════════════════════════════"
     echo "EDGE 模式处理完成"
     
     echo ""
@@ -616,15 +638,24 @@ inference_all_checkpoints() {
         fi
     done
     
+    # Count total tasks for no-edge mode
+    NO_EDGE_TASK_COUNT=$(wc -l < "$NO_EDGE_TASK_FILE")
+    
     # Process no-edge mode checkpoints in parallel
-    echo "正在运行 NO-EDGE 模式推理（使用黑色边缘图，并行数：$NUM_THREADS）..."
+    echo "正在运行 NO-EDGE 模式推理（使用黑色边缘图，并行数：$NUM_THREADS，任务数：$NO_EDGE_TASK_COUNT）..."
+    echo "════════════════════════════════════════════════"
     echo ""
     
-    cat "$NO_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'no_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC'"
+    if [ "$NO_EDGE_TASK_COUNT" -gt 0 ]; then
+        cat "$NO_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'no_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC'"
+    else
+        echo "没有需要处理的任务"
+    fi
     
     rm -f "$NO_EDGE_TASK_FILE"
     
     echo ""
+    echo "════════════════════════════════════════════════"
     echo "NO-EDGE 模式处理完成"
     
     echo ""
@@ -663,15 +694,24 @@ inference_all_checkpoints() {
         fi
     done
     
+    # Count total tasks for dummy-edge mode
+    DUMMY_EDGE_TASK_COUNT=$(wc -l < "$DUMMY_EDGE_TASK_FILE")
+    
     # Process dummy-edge mode checkpoints in parallel
-    echo "正在运行 DUMMY-EDGE 模式推理（使用固定dummy edge图，并行数：$NUM_THREADS）..."
+    echo "正在运行 DUMMY-EDGE 模式推理（使用固定dummy edge图，并行数：$NUM_THREADS，任务数：$DUMMY_EDGE_TASK_COUNT）..."
+    echo "════════════════════════════════════════════════"
     echo ""
     
-    cat "$DUMMY_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'dummy_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' '$DUMMY_EDGE_PATH'"
+    if [ "$DUMMY_EDGE_TASK_COUNT" -gt 0 ]; then
+        cat "$DUMMY_EDGE_TASK_FILE" | xargs -P "$NUM_THREADS" -I {} bash -c "process_single_inference '{}' 'dummy_edge' '$USER_LOGS_DIR' '$OUTPUT_BASE' '$SELECTED_DIR_NAME' '$DEFAULT_INIT_IMG' '$DEFAULT_GT_IMG' '$CONFIG' '$VQGAN_CKPT' '$ENABLE_METRICS_RECALC' '$DUMMY_EDGE_PATH'"
+    else
+        echo "没有需要处理的任务"
+    fi
     
     rm -f "$DUMMY_EDGE_TASK_FILE"
     
     echo ""
+    echo "════════════════════════════════════════════════"
     echo "DUMMY-EDGE 模式处理完成"
     
     echo ""
