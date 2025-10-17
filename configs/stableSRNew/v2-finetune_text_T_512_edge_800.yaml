@@ -1,6 +1,6 @@
-sf: 4
+sf: 16
 model:
-  base_learning_rate: 1e-5
+  base_learning_rate: 5e-6
   target: ldm.models.diffusion.ddpm.LatentDiffusionSRTextWT
   params:
     # parameterization: "v"

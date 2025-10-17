@@ -2116,6 +2116,9 @@ class LatentDiffusionSRTextWT(DDPM):
         encoder_posterior_y = self.encode_first_stage(y)
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
 
+        encoder_posterior_edge = self.encode_first_stage(edge)
+        z_edge = self.get_first_stage_encoding(encoder_posterior_edge).detach()
+
         xc = None
         if self.use_positional_encodings:
             assert NotImplementedError
@@ -2130,7 +2133,7 @@ class LatentDiffusionSRTextWT(DDPM):
 
         out = [z, text_cond]
         out.append(z_gt)
-        out.append(edge)  # Add edge_map to output
+        out.append(z_edge)  # Add encoded edge_map to output
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
@@ -3396,6 +3399,9 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         encoder_posterior_y = self.encode_first_stage(y)
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
 
+        encoder_posterior_edge = self.encode_first_stage(edge)
+        z_edge = self.get_first_stage_encoding(encoder_posterior_edge).detach()
+
         xc = None
         if self.use_positional_encodings:
             assert NotImplementedError
@@ -3410,7 +3416,7 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
 
         out = [z, text_cond]
         out.append(z_gt)
-        out.append(edge)  # Add edge_map to output
+        out.append(z_edge)  # Add encoded edge_map to output
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)

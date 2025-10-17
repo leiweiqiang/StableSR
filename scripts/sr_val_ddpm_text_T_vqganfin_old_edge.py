@@ -579,7 +579,6 @@ def main():
 					t = repeat(torch.tensor([999]), '1 -> b', b=init_image.size(0))
 					t = t.to(device).long()
 					x_T = model.q_sample_respace(x_start=init_latent, t=t, sqrt_alphas_cumprod=sqrt_alphas_cumprod, sqrt_one_minus_alphas_cumprod=sqrt_one_minus_alphas_cumprod, noise=noise)
-					x_T = None
 
 					if opt.use_edge_processing:
 						# Generate edge maps for each image in the batch
@@ -674,6 +673,9 @@ def main():
 								
 								edge_maps.append(edge_map)
 							edge_maps = torch.cat(edge_maps, dim=0)
+
+						init_latent_generator_edge, enc_fea_edge = vq_model.encode(edge_maps)
+						init_latent_edge = model.get_first_stage_encoding(init_latent_generator_edge)
 						
 						# Verify resolution relationship
 						# LR input is resized to input_size (typically 512) to match training
@@ -744,7 +746,7 @@ def main():
 								time_replace=opt.ddpm_steps, 
 								x_T=x_T, 
 								return_intermediates=True,
-								edge_map=edge_maps
+								edge_map=init_latent_edge
 							)
 						else:
 							# Fallback to standard sampling

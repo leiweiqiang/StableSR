@@ -1416,7 +1416,7 @@ class EncoderUNetModelWT(nn.Module):
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
         
-        self.edge_processor = EdgeMapProcessor()
+        # self.edge_processor = EdgeMapProcessor()
         self.in_channels = in_channels
         self.model_channels = model_channels
         self.out_channels = out_channels
@@ -1568,16 +1568,18 @@ class EncoderUNetModelWT(nn.Module):
         :param timesteps: a 1-D batch of timesteps.
         :return: an [N x K] Tensor of outputs.
         """
-        # Process edge map to get 4-channel features
-        edge_feat = self.edge_processor(edge_map=edge_map, x=x)  # (N, 4, 64, 64)
+        # # Process edge map to get 4-channel features
+        # edge_feat = self.edge_processor(edge_map=edge_map, x=x)  # (N, 4, 64, 64)
         
-        # Resize edge features to match the latent spatial size
-        if edge_feat.size(-1) != x.size(-1) or edge_feat.size(-2) != x.size(-2):
-            edge_feat = th.nn.functional.interpolate(edge_feat, size=(x.size(-2), x.size(-1)), mode='bilinear', align_corners=False)
+        # # Resize edge features to match the latent spatial size
+        # if edge_feat.size(-1) != x.size(-1) or edge_feat.size(-2) != x.size(-2):
+        #     edge_feat = th.nn.functional.interpolate(edge_feat, size=(x.size(-2), x.size(-1)), mode='bilinear', align_corners=False)
         
         # Concatenate x and edge features
-        h_input = th.cat([x, edge_feat], dim=1)  # (N, 8, H, W)
+        # h_input = th.cat([x, edge_feat], dim=1)  # (N, 8, H, W)
         # h_input = edge_feat
+        # print(f"edge_map.shape: {edge_map.shape}")
+        h_input = th.cat([x,edge_map],dim=1)
         
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
