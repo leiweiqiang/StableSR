@@ -14,12 +14,13 @@ load_defaults() {
         DEFAULT_CKPT=""
         DEFAULT_LOGS_DIR="logs"
         DEFAULT_OUTPUT_BASE="validation_results"
-        DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
-        # DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
-        DEFAULT_GT_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
+        # DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
+        DEFAULT_INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
+        # DEFAULT_GT_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
         DEFAULT_MAX_IMAGES="-1"
         DEFAULT_CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_800.yaml"
         DEFAULT_VQGAN_CKPT="/stablesr_dataset/checkpoints/vqgan_cfw_00011.ckpt"
+        DEFAULT_SELECTED_DIR=""
     fi
 }
 
@@ -35,6 +36,7 @@ DEFAULT_GT_IMG="$DEFAULT_GT_IMG"
 DEFAULT_MAX_IMAGES="$DEFAULT_MAX_IMAGES"
 DEFAULT_CONFIG="$DEFAULT_CONFIG"
 DEFAULT_VQGAN_CKPT="$DEFAULT_VQGAN_CKPT"
+DEFAULT_SELECTED_DIR="$DEFAULT_SELECTED_DIR"
 EOF
     echo "✓ 默认参数已保存"
 }
@@ -59,11 +61,7 @@ show_menu() {
     echo ""
     echo "1. 推理指定目录下全部 checkpoint (edge & no-edge & dummy-edge)"
     echo ""
-    echo "2. 推理指定 checkpoint 文件 (edge & no-edge & dummy-edge)"
-    echo ""
-    echo "3. 生成推理结果报告 (CSV格式)"
-    echo ""
-    echo "4. 🔄 自动监控模式（检测新checkpoint并自动推理）"
+    echo "2. 🔄 自动监控模式（检测新checkpoint并自动推理）"
     echo ""
     echo "0. 退出"
     echo ""
@@ -275,15 +273,26 @@ inference_all_checkpoints() {
         return
     fi
     
-    # Display directories with numbers
+    # Display directories with numbers and find default choice
+    DEFAULT_CHOICE=""
     for i in "${!LOG_DIRS[@]}"; do
+        if [ "${LOG_DIRS[$i]}" = "$DEFAULT_SELECTED_DIR" ]; then
+            echo "$((i+1)). ${LOG_DIRS[$i]} [上次选择]"
+            DEFAULT_CHOICE=$((i+1))
+        else
         echo "$((i+1)). ${LOG_DIRS[$i]}"
+        fi
     done
     echo ""
     
     # Let user select directory
     while true; do
+        if [ -n "$DEFAULT_CHOICE" ]; then
+            read -p "请选择目录编号 [1-${#LOG_DIRS[@]}] (默认: $DEFAULT_CHOICE): " DIR_CHOICE
+            DIR_CHOICE="${DIR_CHOICE:-$DEFAULT_CHOICE}"
+        else
         read -p "请选择目录编号 [1-${#LOG_DIRS[@]}]: " DIR_CHOICE
+        fi
         
         if [[ "$DIR_CHOICE" =~ ^[0-9]+$ ]] && [ "$DIR_CHOICE" -ge 1 ] && [ "$DIR_CHOICE" -le "${#LOG_DIRS[@]}" ]; then
             break
@@ -294,6 +303,7 @@ inference_all_checkpoints() {
     
     # Determine target directory
     SELECTED_DIR_NAME="${LOG_DIRS[$((DIR_CHOICE-1))]}"
+    DEFAULT_SELECTED_DIR="$SELECTED_DIR_NAME"
     TARGET_LOG_DIR="$USER_LOGS_DIR/$SELECTED_DIR_NAME"
     echo "✓ 将处理目录: $SELECTED_DIR_NAME"
     echo ""
@@ -1284,447 +1294,11 @@ inference_all_checkpoints() {
     fi
 }
 
-# Function for mode 2: Specific checkpoint with all modes
-inference_specific_checkpoint() {
-    echo ""
-    echo "=================================================="
-    echo "  模式 2: 推理指定 Checkpoint (全模式)"
-    echo "=================================================="
-    echo ""
-    echo "将使用指定的 checkpoint 运行三种模式："
-    echo "  - Edge 模式（真实边缘）"
-    echo "  - No-Edge 模式（黑色边缘）"
-    echo "  - Dummy-Edge 模式（固定边缘）"
-    echo ""
-    
-    # Get checkpoint path
-    while true; do
-        CKPT=$(read_with_default "Checkpoint 路径" "$DEFAULT_CKPT")
-        
-        # Validate checkpoint exists
-        if [ ! -f "$CKPT" ]; then
-            echo "❌ 错误：Checkpoint 文件不存在: $CKPT"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            echo "✓ Checkpoint 文件存在"
-            break
-        fi
-    done
-    
-    # Get output directory
-    OUTPUT_DIR=$(read_with_default "输出目录" "$DEFAULT_OUTPUT_BASE")
-    echo "✓ 输出目录: $OUTPUT_DIR"
-    
-    # Get init image path
-    while true; do
-        INIT_IMG=$(read_with_default "输入 LR 图片目录" "$DEFAULT_INIT_IMG")
-        
-        if [ ! -d "$INIT_IMG" ]; then
-            echo "❌ 错误：LR 图片目录不存在: $INIT_IMG"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            IMG_COUNT=$(ls -1 "$INIT_IMG" | wc -l)
-            echo "✓ LR 图片目录存在，共 $IMG_COUNT 个文件"
-            break
-        fi
-    done
-    
-    # Get GT image path
-    while true; do
-        GT_IMG=$(read_with_default "GT HR 图片目录" "$DEFAULT_GT_IMG")
-        
-        if [ ! -d "$GT_IMG" ]; then
-            echo "❌ 错误：GT 图片目录不存在: $GT_IMG"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            GT_COUNT=$(ls -1 "$GT_IMG" | wc -l)
-            echo "✓ GT 图片目录存在，共 $GT_COUNT 个文件"
-            break
-        fi
-    done
-    
-    # Get config file path
-    while true; do
-        CONFIG_PATH=$(read_with_default "Config 文件路径" "$DEFAULT_CONFIG")
-        
-        if [ ! -f "$CONFIG_PATH" ]; then
-            echo "❌ 错误：Config 文件不存在: $CONFIG_PATH"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            echo "✓ Config 文件存在"
-            break
-        fi
-    done
-    
-    # Get VQGAN checkpoint path
-    while true; do
-        VQGAN_PATH=$(read_with_default "VQGAN Checkpoint 路径" "$DEFAULT_VQGAN_CKPT")
-        
-        if [ ! -f "$VQGAN_PATH" ]; then
-            echo "❌ 错误：VQGAN Checkpoint 文件不存在: $VQGAN_PATH"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            echo "✓ VQGAN Checkpoint 文件存在"
-            break
-        fi
-    done
-    
-    # Ask if user wants to process specific file
-    echo ""
-    read -p "是否只推理指定文件? (y/n) [n]: " USE_SPECIFIC_FILE
-    USE_SPECIFIC_FILE=${USE_SPECIFIC_FILE:-n}
-    
-    SPECIFIC_FILE=""
-    if [ "$USE_SPECIFIC_FILE" = "y" ] || [ "$USE_SPECIFIC_FILE" = "Y" ]; then
-        while true; do
-            read -p "输入文件名 (例如: 00001.png): " SPECIFIC_FILE
-            
-            if [ -z "$SPECIFIC_FILE" ]; then
-                echo "❌ 文件名不能为空"
-                continue
-            fi
-            
-            if [ ! -f "$INIT_IMG/$SPECIFIC_FILE" ]; then
-                echo "❌ 错误：文件不存在: $INIT_IMG/$SPECIFIC_FILE"
-                read -p "重新输入? (y/n): " retry
-                if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                    return
-                fi
-            else
-                echo "✓ 文件存在: $SPECIFIC_FILE"
-                break
-            fi
-        done
-    fi
-    
-    # Get max images (only if not using specific file)
-    if [ -z "$SPECIFIC_FILE" ]; then
-        MAX_IMAGES=$(read_with_default "最大推理图片数量 (-1=全部)" "$DEFAULT_MAX_IMAGES")
-        echo "✓ 推理图片数量: $MAX_IMAGES"
-    else
-        MAX_IMAGES=1
-        echo "✓ 推理单个文件"
-    fi
-    
-    # Save as new defaults
-    DEFAULT_CKPT="$CKPT"
-    DEFAULT_OUTPUT_BASE="$OUTPUT_DIR"
-    DEFAULT_INIT_IMG="$INIT_IMG"
-    DEFAULT_GT_IMG="$GT_IMG"
-    DEFAULT_MAX_IMAGES="$MAX_IMAGES"
-    DEFAULT_CONFIG="$CONFIG_PATH"
-    DEFAULT_VQGAN_CKPT="$VQGAN_PATH"
-    save_defaults
-    
-    # Extract experiment name and epoch from checkpoint path
-    EXP_NAME=$(basename $(dirname $(dirname "$CKPT")))
-    CKPT_BASENAME=$(basename "$CKPT")
-    
-    # Extract epoch number
-    if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
-        EPOCH_NUM="${BASH_REMATCH[1]}"
-    else
-        EPOCH_NUM="unknown"
-    fi
-    
-    # Base output directory
-    BASE_OUTPUT="$OUTPUT_DIR/$EXP_NAME"
-    
-    echo ""
-    echo "=================================================="
-    echo "  推理配置"
-    echo "=================================================="
-    echo "Checkpoint: $CKPT"
-    echo "Epoch: $EPOCH_NUM"
-    echo "输出目录: $BASE_OUTPUT"
-    echo "LR图片: $INIT_IMG"
-    echo "GT图片: $GT_IMG"
-    if [ -n "$SPECIFIC_FILE" ]; then
-        echo "指定文件: $SPECIFIC_FILE"
-    else
-        echo "推理数量: $MAX_IMAGES 张"
-    fi
-    echo "=================================================="
-    echo ""
-    
-    # Confirm before running
-    read -p "确认开始推理三种模式? (y/n) [y]: " CONFIRM_RUN
-    CONFIRM_RUN=${CONFIRM_RUN:-y}
-    
-    if [ "$CONFIRM_RUN" != "y" ] && [ "$CONFIRM_RUN" != "Y" ]; then
-        echo "✗ 用户取消推理"
-        return
-    fi
-    
-    # Process EDGE mode
-    echo ""
-    echo "=================================================="
-    echo "  [1/3] EDGE 模式推理"
-    echo "=================================================="
-    
-    python scripts/auto_inference.py \
-        --ckpt "$CKPT" \
-        --output_base "$BASE_OUTPUT" \
-        --sub_folder "edge" \
-        --init_img "$INIT_IMG" \
-        --gt_img "$GT_IMG" \
-        --config "$CONFIG_PATH" \
-        --vqgan_ckpt "$VQGAN_PATH" \
-        --ddpm_steps $DDPM_STEPS \
-        --dec_w $DEC_W \
-        --seed $SEED \
-        --n_samples $N_SAMPLES \
-        --colorfix_type "$COLORFIX_TYPE" \
-        --input_size $INPUT_SIZE \
-        --use_edge_processing \
-        --calculate_metrics \
-        --epoch_override "$EPOCH_NUM" \
-        --exp_name_override "$EXP_NAME"
-    
-    EDGE_SUCCESS=$?
-    
-    # Process NO-EDGE mode
-    echo ""
-    echo "=================================================="
-    echo "  [2/3] NO-EDGE 模式推理"
-    echo "=================================================="
-    
-    python scripts/auto_inference.py \
-        --ckpt "$CKPT" \
-        --output_base "$BASE_OUTPUT" \
-        --sub_folder "no_edge" \
-        --init_img "$INIT_IMG" \
-        --gt_img "$GT_IMG" \
-        --config "$CONFIG_PATH" \
-        --vqgan_ckpt "$VQGAN_PATH" \
-        --ddpm_steps $DDPM_STEPS \
-        --dec_w $DEC_W \
-        --seed $SEED \
-        --n_samples $N_SAMPLES \
-        --colorfix_type "$COLORFIX_TYPE" \
-        --input_size $INPUT_SIZE \
-        --use_edge_processing \
-        --use_white_edge \
-        --calculate_metrics \
-        --epoch_override "$EPOCH_NUM" \
-        --exp_name_override "$EXP_NAME"
-    
-    NO_EDGE_SUCCESS=$?
-    
-    # Process DUMMY-EDGE mode
-    echo ""
-    echo "=================================================="
-    echo "  [3/3] DUMMY-EDGE 模式推理"
-    echo "=================================================="
-    DUMMY_EDGE_PATH="/stablesr_dataset/default_edge.png"
-    
-    python scripts/auto_inference.py \
-        --ckpt "$CKPT" \
-        --output_base "$BASE_OUTPUT" \
-        --sub_folder "dummy_edge" \
-        --init_img "$INIT_IMG" \
-        --gt_img "$GT_IMG" \
-        --config "$CONFIG_PATH" \
-        --vqgan_ckpt "$VQGAN_PATH" \
-        --ddpm_steps $DDPM_STEPS \
-        --dec_w $DEC_W \
-        --seed $SEED \
-        --n_samples $N_SAMPLES \
-        --colorfix_type "$COLORFIX_TYPE" \
-        --input_size $INPUT_SIZE \
-        --use_edge_processing \
-        --use_dummy_edge \
-        --dummy_edge_path "$DUMMY_EDGE_PATH" \
-        --calculate_metrics \
-        --epoch_override "$EPOCH_NUM" \
-        --exp_name_override "$EXP_NAME"
-    
-    DUMMY_SUCCESS=$?
-    
-    # Show summary
-    echo ""
-    echo "=================================================="
-    echo "  全部推理完成！"
-    echo "=================================================="
-    echo ""
-    echo "结果统计："
-    if [ $EDGE_SUCCESS -eq 0 ]; then
-        echo "  ✓ EDGE 模式: 成功"
-        echo "     输出: $BASE_OUTPUT/edge/epochs_$((10#$EPOCH_NUM))"
-        echo "     指标: metrics.json, metrics.csv"
-    else
-        echo "  ✗ EDGE 模式: 失败"
-    fi
-    
-    if [ $NO_EDGE_SUCCESS -eq 0 ]; then
-        echo "  ✓ NO-EDGE 模式: 成功"
-        echo "     输出: $BASE_OUTPUT/no_edge/epochs_$((10#$EPOCH_NUM))"
-        echo "     指标: metrics.json, metrics.csv"
-    else
-        echo "  ✗ NO-EDGE 模式: 失败"
-    fi
-    
-    if [ $DUMMY_SUCCESS -eq 0 ]; then
-        echo "  ✓ DUMMY-EDGE 模式: 成功"
-        echo "     输出: $BASE_OUTPUT/dummy_edge/epochs_$((10#$EPOCH_NUM))"
-        echo "     指标: metrics.json, metrics.csv"
-    else
-        echo "  ✗ DUMMY-EDGE 模式: 失败"
-    fi
-    
-    echo ""
-    echo "所有指标（PSNR, SSIM, LPIPS, Edge PSNR, Edge Overlap）已自动计算"
-    echo ""
-    
-    # Generate comparison grids
-    if [ $EDGE_SUCCESS -eq 0 ] && [ $NO_EDGE_SUCCESS -eq 0 ] && [ $DUMMY_SUCCESS -eq 0 ]; then
-        echo ""
-        echo "===================================================="
-        echo "  生成对比拼接图"
-        echo "===================================================="
-        echo ""
-        
-        python scripts/create_comparison_grid.py \
-            "$BASE_OUTPUT" \
-            "$GT_IMG" \
-            "$EPOCH_NUM"
-        
-        if [ $? -eq 0 ]; then
-            echo ""
-            echo "✓ 对比拼接图已生成"
-            echo "  输出: $BASE_OUTPUT/comparisons/epochs_$((10#$EPOCH_NUM))/"
-        else
-            echo ""
-            echo "⚠ 对比拼接图生成失败"
-        fi
-        echo ""
-    fi
-    
-    # Ask if generate comprehensive report
-    read -p "是否生成综合报告? (y/n) [y]: " GEN_REPORT
-    GEN_REPORT=${GEN_REPORT:-y}
-    
-    if [ "$GEN_REPORT" = "y" ] || [ "$GEN_REPORT" = "Y" ]; then
-        echo ""
-        echo "正在生成综合报告..."
-        PYTHON_SCRIPT="scripts/generate_metrics_report.py"
-        if [ -f "$PYTHON_SCRIPT" ]; then
-            python "$PYTHON_SCRIPT" "$BASE_OUTPUT"
-            
-            DIR_NAME=$(basename "$BASE_OUTPUT")
-            OUTPUT_REPORT="$BASE_OUTPUT/${DIR_NAME}_inference_report.csv"
-            if [ -f "$OUTPUT_REPORT" ]; then
-                echo "✓ 报告生成成功: $OUTPUT_REPORT"
-            fi
-        else
-            echo "⚠ 报告生成脚本不存在: $PYTHON_SCRIPT"
-        fi
-    fi
-    
-    echo ""
-}
-
-# Function for mode 3: Generate report
-generate_report() {
-    echo ""
-    echo "=================================================="
-    echo "  模式 3: 生成推理结果报告 (CSV格式)"
-    echo "=================================================="
-    echo ""
-    
-    # Ask for results directory
-    while true; do
-        read -p "请输入推理结果目录路径: " RESULTS_PATH
-        
-        if [ -z "$RESULTS_PATH" ]; then
-            echo "❌ 错误：路径不能为空"
-            read -p "是否返回菜单? (y/n): " return_menu
-            if [ "$return_menu" = "y" ] || [ "$return_menu" = "Y" ]; then
-                return
-            fi
-            continue
-        fi
-        
-        # Expand tilde and make absolute path
-        RESULTS_PATH=$(eval echo "$RESULTS_PATH")
-        RESULTS_PATH=$(cd "$RESULTS_PATH" 2>/dev/null && pwd || echo "$RESULTS_PATH")
-        
-        if [ ! -d "$RESULTS_PATH" ]; then
-            echo "❌ 错误：目录不存在: $RESULTS_PATH"
-            read -p "重新输入? (y/n): " retry
-            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
-                return
-            fi
-        else
-            echo "✓ 目录存在: $RESULTS_PATH"
-            break
-        fi
-    done
-    
-    echo ""
-    echo "正在扫描推理结果目录..."
-    echo ""
-    
-    # Check if Python script exists
-    PYTHON_SCRIPT="scripts/generate_metrics_report.py"
-    if [ ! -f "$PYTHON_SCRIPT" ]; then
-        echo "❌ 错误：找不到报告生成脚本: $PYTHON_SCRIPT"
-        return
-    fi
-    
-    # Generate the report using Python script
-    echo "正在生成报告..."
-    python "$PYTHON_SCRIPT" "$RESULTS_PATH"
-    
-    # Get the new filename format
-    DIR_NAME=$(basename "$RESULTS_PATH")
-    OUTPUT_REPORT="$RESULTS_PATH/${DIR_NAME}_inference_report.csv"
-    
-    # Add footer with timestamp if report exists
-    if [ -f "$OUTPUT_REPORT" ]; then
-        echo "" >> "$OUTPUT_REPORT"
-        echo "" >> "$OUTPUT_REPORT"
-        echo "$(date '+%a %b %d')" >> "$OUTPUT_REPORT"
-        echo "$(date '+%T')" >> "$OUTPUT_REPORT"
-        echo "$(date '+%Z %Y')" >> "$OUTPUT_REPORT"
-    fi
-    
-    echo ""
-    echo "=================================================="
-    echo "  报告生成完成！"
-    echo "=================================================="
-    echo ""
-    echo "✓ 报告已保存到: $OUTPUT_REPORT"
-    echo ""
-    echo "报告包含以下指标："
-    echo "  - PSNR（图像质量）"
-    echo "  - SSIM（结构相似度）"
-    echo "  - LPIPS（感知质量）"
-    echo "  - Edge PSNR（边缘质量）"
-    echo "  - Edge Overlap（边缘覆盖率）"
-    echo ""
-}
-
-# Function for mode 4: Auto-monitor checkpoints directory
+# Function for mode 2: Auto-monitor checkpoints directory
 auto_monitor() {
     echo ""
     echo "===================================================="
-    echo "  模式 4: 🔄 自动监控新checkpoint"
+    echo "  模式 2: 🔄 自动监控新checkpoint"
     echo "===================================================="
     echo ""
     echo "此模式将持续监控checkpoint目录"
@@ -1765,14 +1339,26 @@ auto_monitor() {
         return
     fi
     
+    # Display directories with numbers and find default choice
+    DEFAULT_CHOICE=""
     for i in "${!LOG_DIRS[@]}"; do
+        if [ "${LOG_DIRS[$i]}" = "$DEFAULT_SELECTED_DIR" ]; then
+            echo "$((i+1)). ${LOG_DIRS[$i]} [上次选择]"
+            DEFAULT_CHOICE=$((i+1))
+        else
         echo "$((i+1)). ${LOG_DIRS[$i]}"
+        fi
     done
     echo ""
     
     # Let user select directory
     while true; do
+        if [ -n "$DEFAULT_CHOICE" ]; then
+            read -p "请选择目录编号 [1-${#LOG_DIRS[@]}] (默认: $DEFAULT_CHOICE): " DIR_CHOICE
+            DIR_CHOICE="${DIR_CHOICE:-$DEFAULT_CHOICE}"
+        else
         read -p "请选择目录编号 [1-${#LOG_DIRS[@]}]: " DIR_CHOICE
+        fi
         
         if [[ "$DIR_CHOICE" =~ ^[0-9]+$ ]] && [ "$DIR_CHOICE" -ge 1 ] && [ "$DIR_CHOICE" -le "${#LOG_DIRS[@]}" ]; then
             break
@@ -1782,6 +1368,7 @@ auto_monitor() {
     done
     
     SELECTED_DIR_NAME="${LOG_DIRS[$((DIR_CHOICE-1))]}"
+    DEFAULT_SELECTED_DIR="$SELECTED_DIR_NAME"
     TARGET_LOG_DIR="$USER_LOGS_DIR/$SELECTED_DIR_NAME"
     CKPT_DIR="$TARGET_LOG_DIR/checkpoints"
     
@@ -1922,12 +1509,56 @@ auto_monitor() {
                     
                     rm -f "$AUTO_TASKS"
                     
+                    # Generate comparison grids for this epoch
+                    echo "  🖼️  生成对比拼接图..."
+                    COMPARISON_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/comparisons/epochs_$((10#$EPOCH_NUM))"
+                    if [ -d "$COMPARISON_DIR" ]; then
+                        COMP_COUNT=$(find "$COMPARISON_DIR" -maxdepth 1 -name "*_comparison.png" -type f 2>/dev/null | wc -l)
+                        if [ "$COMP_COUNT" -gt 0 ]; then
+                            echo "  ✅ 对比图已存在，跳过"
+                        else
+                            python scripts/create_comparison_grid.py \
+                                "$OUTPUT_BASE/$SELECTED_DIR_NAME" \
+                                "$DEFAULT_GT_IMG" \
+                                "$EPOCH_NUM" > /dev/null 2>&1
+                            if [ $? -eq 0 ]; then
+                                echo "  ✅ 对比图生成完成"
+                            else
+                                echo "  ⚠️  对比图生成失败"
+                            fi
+                        fi
+                    else
+                        python scripts/create_comparison_grid.py \
+                            "$OUTPUT_BASE/$SELECTED_DIR_NAME" \
+                            "$DEFAULT_GT_IMG" \
+                            "$EPOCH_NUM" > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                            echo "  ✅ 对比图生成完成"
+                        else
+                            echo "  ⚠️  对比图生成失败"
+                        fi
+                    fi
+                    
                     # Generate report
                     echo "  📊 生成报告..."
                     RESULTS_PATH="$OUTPUT_BASE/$SELECTED_DIR_NAME"
                     if [ -d "$RESULTS_PATH" ]; then
                         python scripts/generate_metrics_report.py "$RESULTS_PATH" > /dev/null 2>&1
                         if [ $? -eq 0 ]; then
+                            # Add timestamp to report
+                            DIR_NAME=$(basename "$RESULTS_PATH")
+                            OUTPUT_REPORT="$RESULTS_PATH/${DIR_NAME}_inference_report.csv"
+                            if [ -f "$OUTPUT_REPORT" ]; then
+                                # Remove old timestamp if exists (last 5 lines)
+                                head -n -5 "$OUTPUT_REPORT" > "${OUTPUT_REPORT}.tmp" 2>/dev/null || cp "$OUTPUT_REPORT" "${OUTPUT_REPORT}.tmp"
+                                # Add new timestamp
+                                echo "" >> "${OUTPUT_REPORT}.tmp"
+                                echo "" >> "${OUTPUT_REPORT}.tmp"
+                                echo "$(date '+%a %b %d')" >> "${OUTPUT_REPORT}.tmp"
+                                echo "$(date '+%T')" >> "${OUTPUT_REPORT}.tmp"
+                                echo "$(date '+%Z %Y')" >> "${OUTPUT_REPORT}.tmp"
+                                mv "${OUTPUT_REPORT}.tmp" "$OUTPUT_REPORT"
+                            fi
                             echo "  ✅ 报告生成完成"
                         else
                             echo "  ⚠️  报告生成失败"
@@ -1964,19 +1595,13 @@ main() {
     
     # Main menu - execute once and exit
     show_menu
-    read -p "请选择 [0-4]: " choice
+    read -p "请选择 [0-2]: " choice
     
     case $choice in
         1)
             inference_all_checkpoints
             ;;
         2)
-            inference_specific_checkpoint
-            ;;
-        3)
-            generate_report
-            ;;
-        4)
             auto_monitor
             ;;
         0)
@@ -1986,7 +1611,7 @@ main() {
             ;;
         *)
             echo ""
-            echo "无效选项，请选择 0-4。"
+            echo "无效选项，请选择 0-2。"
             exit 1
             ;;
     esac
@@ -2006,8 +1631,8 @@ if [ $# -gt 0 ]; then
     
     # Default parameters
     SUB_FOLDER=""
-    # INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
-    INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
+    INIT_IMG="/mnt/nas_dp/test_dataset/32x32_valid_LR"
+    # INIT_IMG="/mnt/nas_dp/test_dataset/128x128_valid_LR"
     GT_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
     HR_IMG="/mnt/nas_dp/test_dataset/512x512_valid_HR"
     CKPT=""

@@ -1,4 +1,4 @@
-sf: 4
+sf: 16
 model:
   base_learning_rate: 5.0e-05
   target: ldm.models.diffusion.ddpm.LatentDiffusionSRTextWTFFHQ

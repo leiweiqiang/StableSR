@@ -9,7 +9,7 @@ cd ~/pd/StableSR_Edge_v3
 
 # Training configuration
 CONFIG="configs/stableSRNew/v2-finetune_text_T_512_edge_800.yaml"
-GPU_IDS="0,1,2,3,4,5,6,7,"  # 使用的GPU ID，根据你的资源调整
+GPU_IDS="0,1,2,3,4,5,6,7"  # 使用的GPU ID，根据你的资源调整
 BATCH_SIZE=2       # 每GPU的batch size
 NUM_NODES=1        # 节点数
 ACCUMULATE_GRAD=6  # 梯度累积步数
