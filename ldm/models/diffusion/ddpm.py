@@ -1582,6 +1582,7 @@ class LatentDiffusionSRTextWT(DDPM):
                  time_replace=None,
                  use_usm=False,
                  mix_ratio=0.0,
+                 edge_loss_weight=0.0,
                  *args, **kwargs):
         # put this in your init
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
@@ -1592,6 +1593,11 @@ class LatentDiffusionSRTextWT(DDPM):
         self.time_replace = time_replace
         self.use_usm = use_usm
         self.mix_ratio = mix_ratio
+        
+        # Edge loss configuration
+        self.edge_loss_weight = edge_loss_weight
+        self.use_edge_loss = edge_loss_weight > 0
+        
         assert self.num_timesteps_cond <= kwargs['timesteps']
         # for backwards compatibility after implementation of DiffusionWrapper
         if conditioning_key is None:
@@ -1660,6 +1666,12 @@ class LatentDiffusionSRTextWT(DDPM):
             self.snr = 1.0 / (1 - self.alphas_cumprod) - 1
         else:
             self.snr = None
+
+        # Initialize EdgeMapGenerator for edge loss
+        if self.use_edge_loss:
+            from basicsr.utils.edge_utils import EdgeMapGenerator
+            self.edge_generator = EdgeMapGenerator(device='cuda' if torch.cuda.is_available() else 'cpu')
+            print(f"Edge loss enabled with weight: {self.edge_loss_weight}")
 
         # Support time respacing during training
         if self.time_replace is None:
@@ -2514,6 +2526,46 @@ class LatentDiffusionSRTextWT(DDPM):
         loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
         loss += (self.original_elbo_weight * loss_vlb)
         loss_dict.update({f'{prefix}/loss': loss})
+
+        # Edge Loss Calculation
+        if self.use_edge_loss and self.training:
+            # 1. 获取预测的x0 (在latent space)
+            if self.parameterization == "eps":
+                # 从noise prediction恢复x0
+                pred_x0 = self.predict_start_from_noise(x_noisy, t, model_output_)
+            elif self.parameterization == "x0":
+                pred_x0 = model_output_
+            elif self.parameterization == "v":
+                pred_x0 = self.predict_start_from_z_and_v(x_noisy, model_output_, t)
+            else:
+                raise NotImplementedError()
+            
+            # 2. 解码到image space (保持梯度)
+            pred_img = self.differentiable_decode_first_stage(pred_x0)  # [-1, 1]
+            gt_img = self.differentiable_decode_first_stage(x_start)    # [-1, 1]
+            
+            # 3. 生成edge maps (不可微分，所以使用detach)
+            # 为了保持对pred_img的梯度，我们只在edge detection时detach
+            with torch.no_grad():
+                pred_edge = self.edge_generator.generate_from_tensor(
+                    pred_img.detach(), input_format='RGB', normalize_range='[-1,1]'
+                )  # 输出: [-1, 1]
+                
+                gt_edge = self.edge_generator.generate_from_tensor(
+                    gt_img.detach(), input_format='RGB', normalize_range='[-1,1]'
+                )  # 输出: [-1, 1]
+            
+            # 4. 归一化到[0, 1]用于loss计算
+            pred_edge_norm = (pred_edge + 1.0) / 2.0  # [-1,1] -> [0,1]
+            gt_edge_norm = (gt_edge + 1.0) / 2.0      # [-1,1] -> [0,1]
+            
+            # 5. 计算edge maps之间的MSE loss
+            edge_loss = torch.nn.functional.mse_loss(pred_edge_norm, gt_edge_norm, reduction='mean')
+            
+            # 6. 添加到总loss
+            loss_dict.update({f'{prefix}/loss_edge': edge_loss})
+            loss = loss + self.edge_loss_weight * edge_loss
+            loss_dict.update({f'{prefix}/loss': loss})  # 更新总loss
 
         return loss, loss_dict
 

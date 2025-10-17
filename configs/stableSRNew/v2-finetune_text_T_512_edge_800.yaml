@@ -28,6 +28,8 @@ model:
     p2_gamma: ~
     p2_k: ~
     ignore_keys: ['structcond_stage_model.input_blocks.0.0']
+    # Edge loss configuration
+    edge_loss_weight: 10  # Weight for edge loss (set to 0 to disable)
 
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModelDualcondV2
