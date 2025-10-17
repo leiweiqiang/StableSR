@@ -63,6 +63,8 @@ show_menu() {
     echo ""
     echo "3. 生成推理结果报告 (CSV格式)"
     echo ""
+    echo "4. 🔄 自动监控模式（检测新checkpoint并自动推理）"
+    echo ""
     echo "0. 退出"
     echo ""
     echo "===================================================="
@@ -1718,6 +1720,243 @@ generate_report() {
     echo ""
 }
 
+# Function for mode 4: Auto-monitor checkpoints directory
+auto_monitor() {
+    echo ""
+    echo "===================================================="
+    echo "  模式 4: 🔄 自动监控新checkpoint"
+    echo "===================================================="
+    echo ""
+    echo "此模式将持续监控checkpoint目录"
+    echo "一旦检测到新的.ckpt文件，将自动："
+    echo "  1. 运行推理（edge, no-edge, dummy-edge）"
+    echo "  2. 生成报告"
+    echo "  3. 继续监控下一个新checkpoint"
+    echo ""
+    echo "按 Ctrl+C 可随时停止监控"
+    echo ""
+    
+    # Ask user for logs directory
+    while true; do
+        USER_LOGS_DIR=$(read_with_default "请输入要监控的logs目录路径" "$DEFAULT_LOGS_DIR")
+        
+        if [ ! -d "$USER_LOGS_DIR" ]; then
+            echo "❌ 错误：目录不存在: $USER_LOGS_DIR"
+            read -p "重新输入? (y/n): " retry
+            if [ "$retry" != "y" ] && [ "$retry" != "Y" ]; then
+                return
+            fi
+        else
+            echo "✓ 目录存在: $USER_LOGS_DIR"
+            DEFAULT_LOGS_DIR="$USER_LOGS_DIR"
+            break
+        fi
+    done
+    
+    # List available directories
+    echo ""
+    echo "可用的子目录："
+    echo ""
+    
+    mapfile -t LOG_DIRS < <(find "$USER_LOGS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name "child_runs" -printf "%f\n" | sort)
+    
+    if [ ${#LOG_DIRS[@]} -eq 0 ]; then
+        echo "❌ 错误：目录下没有找到子目录"
+        return
+    fi
+    
+    for i in "${!LOG_DIRS[@]}"; do
+        echo "$((i+1)). ${LOG_DIRS[$i]}"
+    done
+    echo ""
+    
+    # Let user select directory
+    while true; do
+        read -p "请选择目录编号 [1-${#LOG_DIRS[@]}]: " DIR_CHOICE
+        
+        if [[ "$DIR_CHOICE" =~ ^[0-9]+$ ]] && [ "$DIR_CHOICE" -ge 1 ] && [ "$DIR_CHOICE" -le "${#LOG_DIRS[@]}" ]; then
+            break
+        else
+            echo "❌ 无效选择，请输入 1 到 ${#LOG_DIRS[@]} 之间的数字"
+        fi
+    done
+    
+    SELECTED_DIR_NAME="${LOG_DIRS[$((DIR_CHOICE-1))]}"
+    TARGET_LOG_DIR="$USER_LOGS_DIR/$SELECTED_DIR_NAME"
+    CKPT_DIR="$TARGET_LOG_DIR/checkpoints"
+    
+    echo "✓ 将监控目录: $SELECTED_DIR_NAME"
+    echo ""
+    
+    if [ ! -d "$CKPT_DIR" ]; then
+        echo "❌ 错误：checkpoints目录不存在: $CKPT_DIR"
+        return
+    fi
+    
+    # Ask for output directory
+    OUTPUT_BASE=$(read_with_default "请输入保存目录名" "$DEFAULT_OUTPUT_BASE")
+    echo "✓ 结果将保存到: $OUTPUT_BASE"
+    DEFAULT_OUTPUT_BASE="$OUTPUT_BASE"
+    save_defaults
+    echo ""
+    
+    # Ask for monitoring interval
+    read -p "请输入监控间隔（秒）[默认: 60]: " MONITOR_INTERVAL
+    MONITOR_INTERVAL="${MONITOR_INTERVAL:-60}"
+    
+    if ! [[ "$MONITOR_INTERVAL" =~ ^[0-9]+$ ]] || [ "$MONITOR_INTERVAL" -lt 10 ]; then
+        echo "⚠️  间隔过短，使用默认值 60 秒"
+        MONITOR_INTERVAL=60
+    fi
+    
+    echo ""
+    echo "════════════════════════════════════════════════"
+    echo "  🔄 开始自动监控"
+    echo "  📁 监控目录: $CKPT_DIR"
+    echo "  ⏱️  检查间隔: $MONITOR_INTERVAL 秒"
+    echo "  💾 输出目录: $OUTPUT_BASE"
+    echo "════════════════════════════════════════════════"
+    echo ""
+    
+    # Record already processed checkpoints
+    PROCESSED_FILE=$(mktemp)
+    find "$CKPT_DIR" -name "*.ckpt" ! -name "last.ckpt" -type f -o -type l > "$PROCESSED_FILE"
+    PROCESSED_COUNT=$(wc -l < "$PROCESSED_FILE")
+    
+    echo "📝 当前已有 $PROCESSED_COUNT 个checkpoint（将跳过这些）"
+    echo ""
+    echo "🔍 开始监控新checkpoint..."
+    echo "   按 Ctrl+C 停止"
+    echo ""
+    
+    # Trap Ctrl+C to clean up
+    trap 'echo ""; echo "⏹️  监控已停止"; rm -f "$PROCESSED_FILE"; exit 0' INT
+    
+    # Monitoring loop
+    while true; do
+        # Find all current checkpoints
+        CURRENT_CKPTS=$(mktemp)
+        find "$CKPT_DIR" -name "*.ckpt" ! -name "last.ckpt" \( -type f -o -type l \) > "$CURRENT_CKPTS"
+        
+        # Find new checkpoints
+        NEW_CKPTS=$(comm -13 <(sort "$PROCESSED_FILE") <(sort "$CURRENT_CKPTS"))
+        
+        if [ -n "$NEW_CKPTS" ]; then
+            NEW_COUNT=$(echo "$NEW_CKPTS" | wc -l)
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🆕 检测到 $NEW_COUNT 个新checkpoint！"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            
+            echo "$NEW_CKPTS" | while read -r NEW_CKPT; do
+                if [ -z "$NEW_CKPT" ]; then
+                    continue
+                fi
+                
+                CKPT_NAME=$(basename "$NEW_CKPT")
+                echo "▶️  处理新checkpoint: $CKPT_NAME"
+                echo ""
+                
+                # Run inference for this checkpoint (all 3 modes in parallel)
+                # We'll call a simplified version similar to mode 1 but for single checkpoint
+                
+                # Set SELECTED_EPOCHS to process this checkpoint
+                if [[ "$CKPT_NAME" =~ epoch=([0-9]+) ]]; then
+                    EPOCH_NUM="${BASH_REMATCH[1]}"
+                    export SELECTED_EPOCHS=("$EPOCH_NUM")
+                    export CKPT_FILES=("$NEW_CKPT")
+                    
+                    # Call the inference logic (simplified inline version)
+                    echo "  🚀 开始推理（3种模式并行）..."
+                    
+                    # Create task list for all 3 modes
+                    AUTO_TASKS=$(mktemp)
+                    TASK_IDX=0
+                    DUMMY_EDGE_PATH="/stablesr_dataset/default_edge.png"
+                    
+                    # Parse GPU settings
+                    IFS=',' read -ra GPU_ARRAY <<< "${GPU_DEVICES:-0,1,2,3,4,5,6,7}"
+                    NUM_GPUS=${#GPU_ARRAY[@]}
+                    
+                    # Add tasks for all 3 modes
+                    for MODE in edge no_edge dummy_edge; do
+                        OUTPUT_CHECK="$OUTPUT_BASE/$SELECTED_DIR_NAME/$MODE/epochs_$((10#$EPOCH_NUM))"
+                        if [ ! -d "$OUTPUT_CHECK" ] || [ $(find "$OUTPUT_CHECK" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l) -eq 0 ]; then
+                            GPU_ID=${GPU_ARRAY[$((TASK_IDX % NUM_GPUS))]}
+                            if [ "$MODE" = "dummy_edge" ]; then
+                                echo "$NEW_CKPT|$MODE|$GPU_ID|$TASK_IDX|$DUMMY_EDGE_PATH" >> "$AUTO_TASKS"
+                            else
+                                echo "$NEW_CKPT|$MODE|$GPU_ID|$TASK_IDX|" >> "$AUTO_TASKS"
+                            fi
+                            ((TASK_IDX++))
+                        fi
+                    done
+                    
+                    # Run tasks in parallel
+                    TASK_COUNT=$(wc -l < "$AUTO_TASKS" 2>/dev/null || echo 0)
+                    if [ "$TASK_COUNT" -gt 0 ]; then
+                        echo "  📋 任务数: $TASK_COUNT"
+                        
+                        JOB_COUNT=0
+                        PIDS=()
+                        
+                        while IFS='|' read -r CKPT_PATH MODE GPU_ID TASK_IDX EXTRA_PATH; do
+                            (
+                                process_single_inference "$CKPT_PATH" "$MODE" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
+                                    "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "false" "$EXTRA_PATH" "$GPU_ID"
+                            ) &
+                            PIDS+=($!)
+                            ((JOB_COUNT++))
+                        done < "$AUTO_TASKS"
+                        
+                        # Wait for all tasks to complete
+                        for pid in "${PIDS[@]}"; do
+                            wait $pid 2>/dev/null
+                        done
+                        
+                        echo "  ✅ 推理完成"
+                    else
+                        echo "  ℹ️  所有模式已存在，跳过推理"
+                    fi
+                    
+                    rm -f "$AUTO_TASKS"
+                    
+                    # Generate report
+                    echo "  📊 生成报告..."
+                    RESULTS_PATH="$OUTPUT_BASE/$SELECTED_DIR_NAME"
+                    if [ -d "$RESULTS_PATH" ]; then
+                        python scripts/generate_metrics_report.py "$RESULTS_PATH" > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                            echo "  ✅ 报告生成完成"
+                        else
+                            echo "  ⚠️  报告生成失败"
+                        fi
+                    fi
+                    
+                    echo ""
+                fi
+                
+                # Mark as processed
+                echo "$NEW_CKPT" >> "$PROCESSED_FILE"
+            done
+            
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "✅ 本轮处理完成，继续监控..."
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+        else
+            # No new checkpoints
+            echo -ne "\r⏳ 监控中... ($(date '+%H:%M:%S')) - 下次检查: ${MONITOR_INTERVAL}秒后  "
+        fi
+        
+        rm -f "$CURRENT_CKPTS"
+        sleep "$MONITOR_INTERVAL"
+    done
+    
+    rm -f "$PROCESSED_FILE"
+}
+
 # Main program
 main() {
     # Load saved defaults
@@ -1737,6 +1976,9 @@ main() {
         3)
             generate_report
             ;;
+        4)
+            auto_monitor
+            ;;
         0)
             echo ""
             echo "退出中..."
@@ -1744,7 +1986,7 @@ main() {
             ;;
         *)
             echo ""
-            echo "无效选项，请选择 0-3。"
+            echo "无效选项，请选择 0-4。"
             exit 1
             ;;
     esac
