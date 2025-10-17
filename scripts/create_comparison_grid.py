@@ -370,8 +370,15 @@ def process_checkpoint_comparisons(base_path, gt_dir, epoch_num):
     """
     Process all images for a given checkpoint and create comparison grids.
     """
+    # Convert epoch_num to integer to remove leading zeros
+    try:
+        epoch_int = int(epoch_num)
+    except ValueError:
+        print(f"❌ Invalid epoch number format: {epoch_num}")
+        return 0
+    
     # Get edge results directory
-    edge_dir = os.path.join(base_path, "edge", f"epochs_{epoch_num}")
+    edge_dir = os.path.join(base_path, "edge", f"epochs_{epoch_int}")
     
     if not os.path.exists(edge_dir):
         print(f"❌ Edge directory not found: {edge_dir}")
@@ -402,34 +409,34 @@ def process_checkpoint_comparisons(base_path, gt_dir, epoch_num):
     if os.path.exists(stablesr_metrics):
         metrics_paths['stablesr'] = stablesr_metrics
     
-    # Edge metrics
-    edge_metrics = os.path.join(base_path, "edge", f"epochs_{epoch_num}", "metrics.json")
+    # Edge metrics (use epoch_int for directory name)
+    edge_metrics = os.path.join(base_path, "edge", f"epochs_{epoch_int}", "metrics.json")
     if os.path.exists(edge_metrics):
         metrics_paths['edge'] = edge_metrics
     
     # No edge metrics
-    no_edge_metrics = os.path.join(base_path, "no_edge", f"epochs_{epoch_num}", "metrics.json")
+    no_edge_metrics = os.path.join(base_path, "no_edge", f"epochs_{epoch_int}", "metrics.json")
     if os.path.exists(no_edge_metrics):
         metrics_paths['no_edge'] = no_edge_metrics
     
     # Dummy edge metrics
-    dummy_edge_metrics = os.path.join(base_path, "dummy_edge", f"epochs_{epoch_num}", "metrics.json")
+    dummy_edge_metrics = os.path.join(base_path, "dummy_edge", f"epochs_{epoch_int}", "metrics.json")
     if os.path.exists(dummy_edge_metrics):
         metrics_paths['dummy_edge'] = dummy_edge_metrics
     
-    # Create output directory for comparison grids
-    comparison_dir = os.path.join(base_path, "comparisons", f"epochs_{epoch_num}")
+    # Create output directory for comparison grids (use epoch_int for consistency)
+    comparison_dir = os.path.join(base_path, "comparisons", f"epochs_{epoch_int}")
     os.makedirs(comparison_dir, exist_ok=True)
     
-    print(f"  📊 Creating comparison grids for epoch {epoch_num}...")
+    print(f"  📊 Creating comparison grids for epoch {epoch_int}...")
     print(f"     Found {len(image_files)} images to process")
     print(f"     Loaded metrics from {len(metrics_paths)} modes")
     
     success_count = 0
     
     for image_name in sorted(image_files):
-        # Find corresponding images
-        image_paths = find_corresponding_images(base_path, epoch_num, image_name)
+        # Find corresponding images (use epoch_int)
+        image_paths = find_corresponding_images(base_path, epoch_int, image_name)
         
         # GT image path (remove _edge suffix if present)
         if image_name.endswith('_edge.png'):

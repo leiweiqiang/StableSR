@@ -61,7 +61,7 @@ show_menu() {
     echo ""
     echo "1. 推理指定目录下全部 checkpoint (edge & no-edge & dummy-edge)"
     echo ""
-    echo "2. 🔄 自动监控模式（检测新checkpoint并自动推理）"
+    echo "2. 自动监控模式（检测新checkpoint并自动推理）"
     echo ""
     echo "0. 退出"
     echo ""
@@ -1410,7 +1410,350 @@ auto_monitor() {
     find "$CKPT_DIR" -name "*.ckpt" ! -name "last.ckpt" -type f -o -type l > "$PROCESSED_FILE"
     PROCESSED_COUNT=$(wc -l < "$PROCESSED_FILE")
     
-    echo "📝 当前已有 $PROCESSED_COUNT 个checkpoint（将跳过这些）"
+    echo "📝 当前已有 $PROCESSED_COUNT 个checkpoint"
+    echo ""
+    
+    # Check existing checkpoints for missing inference results
+    if [ "$PROCESSED_COUNT" -gt 0 ]; then
+        echo "🔍 检查已有checkpoint的推理结果完整性..."
+        echo ""
+        
+        MISSING_TASKS=$(mktemp)
+        TOTAL_CHECKED=0
+        MISSING_COUNT=0
+        
+        while read -r CKPT_PATH; do
+            if [ -z "$CKPT_PATH" ]; then
+                continue
+            fi
+            
+            CKPT_BASENAME=$(basename "$CKPT_PATH")
+            if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+                EPOCH_NUM="${BASH_REMATCH[1]}"
+            else
+                continue
+            fi
+            
+            # Check all 3 modes (edge, no_edge, dummy_edge)
+            for MODE in edge no_edge dummy_edge; do
+                OUTPUT_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/$MODE/epochs_$((10#$EPOCH_NUM))"
+                NEEDS_INFERENCE=false
+                NEEDS_METRICS=false
+                
+                # Check if output directory exists
+                if [ ! -d "$OUTPUT_DIR" ]; then
+                    NEEDS_INFERENCE=true
+                else
+                    # Check if there are any PNG images
+                    PNG_COUNT=$(find "$OUTPUT_DIR" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+                    if [ "$PNG_COUNT" -eq 0 ]; then
+                        NEEDS_INFERENCE=true
+                    else
+                        # Images exist, check if metrics files exist
+                        METRICS_JSON="$OUTPUT_DIR/metrics.json"
+                        METRICS_CSV="$OUTPUT_DIR/metrics.csv"
+                        
+                        if [ ! -f "$METRICS_JSON" ] || [ ! -f "$METRICS_CSV" ]; then
+                            NEEDS_METRICS=true
+                        fi
+                    fi
+                fi
+                
+                if [ "$NEEDS_INFERENCE" = true ]; then
+                    echo "  ⚠️  epoch=$EPOCH_NUM [$MODE] - 缺少推理结果（将补充）"
+                    echo "$CKPT_PATH|$MODE|inference" >> "$MISSING_TASKS"
+                    ((MISSING_COUNT++))
+                elif [ "$NEEDS_METRICS" = true ]; then
+                    echo "  ⚠️  epoch=$EPOCH_NUM [$MODE] - 缺少metrics文件（将补充）"
+                    echo "$CKPT_PATH|$MODE|metrics" >> "$MISSING_TASKS"
+                    ((MISSING_COUNT++))
+                fi
+            done
+            
+            ((TOTAL_CHECKED++))
+        done < "$PROCESSED_FILE"
+        
+        echo ""
+        echo "  检查完成：共检查 $TOTAL_CHECKED 个checkpoint（每个3种模式）"
+        echo "  发现缺失项：$MISSING_COUNT 个"
+        echo ""
+        
+        # Also check for missing comparison grids
+        echo "🔍 检查对比图完整性..."
+        echo ""
+        
+        MISSING_COMPARISONS=$(mktemp)
+        COMPARISON_MISSING_COUNT=0
+        
+        while read -r CKPT_PATH; do
+            if [ -z "$CKPT_PATH" ]; then
+                continue
+            fi
+            
+            CKPT_BASENAME=$(basename "$CKPT_PATH")
+            if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+                EPOCH_NUM="${BASH_REMATCH[1]}"
+            else
+                continue
+            fi
+            
+            # Check if comparison directory exists and has comparison images
+            COMPARISON_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/comparisons/epochs_$((10#$EPOCH_NUM))"
+            NEEDS_COMPARISON=false
+            
+            if [ ! -d "$COMPARISON_DIR" ]; then
+                NEEDS_COMPARISON=true
+            else
+                COMP_COUNT=$(find "$COMPARISON_DIR" -maxdepth 1 -name "*_comparison.png" -type f 2>/dev/null | wc -l)
+                if [ "$COMP_COUNT" -eq 0 ]; then
+                    NEEDS_COMPARISON=true
+                fi
+            fi
+            
+            if [ "$NEEDS_COMPARISON" = true ]; then
+                # Check if at least edge mode has results (needed for comparison)
+                EDGE_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/edge/epochs_$((10#$EPOCH_NUM))"
+                if [ -d "$EDGE_DIR" ]; then
+                    PNG_COUNT=$(find "$EDGE_DIR" -maxdepth 1 -name "*.png" -type f 2>/dev/null | wc -l)
+                    if [ "$PNG_COUNT" -gt 0 ]; then
+                        echo "  ⚠️  epoch=$EPOCH_NUM - 缺少对比图（将补充）"
+                        echo "$EPOCH_NUM" >> "$MISSING_COMPARISONS"
+                        ((COMPARISON_MISSING_COUNT++))
+                    fi
+                fi
+            fi
+        done < "$PROCESSED_FILE"
+        
+        echo ""
+        echo "  检查完成：共检查 $TOTAL_CHECKED 个checkpoint的对比图"
+        echo "  发现缺失对比图：$COMPARISON_MISSING_COUNT 个"
+        echo ""
+        
+        # Process missing tasks if any
+        if [ "$MISSING_COUNT" -gt 0 ] || [ "$COMPARISON_MISSING_COUNT" -gt 0 ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🔧 开始补充缺失的推理结果和metrics..."
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            
+            # Parse GPU settings
+            IFS=',' read -ra GPU_ARRAY <<< "${GPU_DEVICES:-0,1,2,3,4,5,6,7}"
+            NUM_GPUS=${#GPU_ARRAY[@]}
+            
+            # Group tasks by type
+            INFERENCE_TASKS=$(mktemp)
+            METRICS_TASKS=$(mktemp)
+            
+            while IFS='|' read -r CKPT_PATH MODE TASK_TYPE; do
+                if [ "$TASK_TYPE" = "inference" ]; then
+                    echo "$CKPT_PATH|$MODE" >> "$INFERENCE_TASKS"
+                elif [ "$TASK_TYPE" = "metrics" ]; then
+                    echo "$CKPT_PATH|$MODE" >> "$METRICS_TASKS"
+                fi
+            done < "$MISSING_TASKS"
+            
+            # Process inference tasks first (in parallel)
+            INFERENCE_COUNT=$(wc -l < "$INFERENCE_TASKS" 2>/dev/null || echo 0)
+            if [ "$INFERENCE_COUNT" -gt 0 ]; then
+                echo "📊 补充推理结果：$INFERENCE_COUNT 个任务"
+                echo ""
+                
+                TASK_IDX=0
+                PIDS=()
+                DUMMY_EDGE_PATH="/stablesr_dataset/default_edge.png"
+                
+                while IFS='|' read -r CKPT_PATH MODE; do
+                    GPU_ID=${GPU_ARRAY[$((TASK_IDX % NUM_GPUS))]}
+                    
+                    (
+                        process_single_inference "$CKPT_PATH" "$MODE" "$USER_LOGS_DIR" "$OUTPUT_BASE" "$SELECTED_DIR_NAME" \
+                            "$DEFAULT_INIT_IMG" "$DEFAULT_GT_IMG" "$CONFIG" "$VQGAN_CKPT" "false" "$DUMMY_EDGE_PATH" "$GPU_ID"
+                    ) &
+                    PIDS+=($!)
+                    ((TASK_IDX++))
+                done < "$INFERENCE_TASKS"
+                
+                # Wait for all inference tasks
+                for pid in "${PIDS[@]}"; do
+                    wait $pid 2>/dev/null
+                done
+                
+                echo ""
+                echo "  ✅ 推理补充完成"
+                echo ""
+            fi
+            
+            # Process metrics tasks (sequential, faster)
+            METRICS_COUNT=$(wc -l < "$METRICS_TASKS" 2>/dev/null || echo 0)
+            if [ "$METRICS_COUNT" -gt 0 ]; then
+                echo "📈 补充metrics文件：$METRICS_COUNT 个任务"
+                echo ""
+                
+                while IFS='|' read -r CKPT_PATH MODE; do
+                    CKPT_BASENAME=$(basename "$CKPT_PATH")
+                    if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+                        EPOCH_NUM="${BASH_REMATCH[1]}"
+                        OUTPUT_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/$MODE/epochs_$((10#$EPOCH_NUM))"
+                        
+                        echo "  → epoch=$EPOCH_NUM [$MODE] 计算metrics..."
+                        python scripts/recalculate_metrics.py "$OUTPUT_DIR" "$DEFAULT_GT_IMG" > /dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                            echo "    ✓ 完成"
+                        else
+                            echo "    ⚠️  失败"
+                        fi
+                    fi
+                done < "$METRICS_TASKS"
+                
+                echo ""
+                echo "  ✅ Metrics补充完成"
+                echo ""
+            fi
+            
+            rm -f "$INFERENCE_TASKS" "$METRICS_TASKS"
+            
+            if [ "$MISSING_COUNT" -gt 0 ]; then
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "✅ 推理和Metrics补充完成，共处理 $MISSING_COUNT 项"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+            fi
+            
+            # Generate comparison grids for all epochs that need them
+            if [ "$COMPARISON_MISSING_COUNT" -gt 0 ]; then
+                echo "🖼️  补充缺失的对比图..."
+                echo ""
+                
+                # Combine epochs from inference tasks and missing comparisons
+                ALL_COMPARISON_EPOCHS=$(mktemp)
+                
+                # Add epochs from inference/metrics tasks
+                if [ -s "$MISSING_TASKS" ]; then
+                    while read -r CKPT_PATH; do
+                        if [ -z "$CKPT_PATH" ]; then
+                            continue
+                        fi
+                        CKPT_BASENAME=$(basename "$CKPT_PATH")
+                        if [[ "$CKPT_BASENAME" =~ epoch=([0-9]+) ]]; then
+                            echo "${BASH_REMATCH[1]}"
+                        fi
+                    done < <(cut -d'|' -f1 "$MISSING_TASKS" | sort -u) >> "$ALL_COMPARISON_EPOCHS"
+                fi
+                
+                # Add epochs from missing comparisons list
+                if [ -s "$MISSING_COMPARISONS" ]; then
+                    cat "$MISSING_COMPARISONS" >> "$ALL_COMPARISON_EPOCHS"
+                fi
+                
+                # Get unique epoch count
+                EPOCH_COUNT=$(sort -u "$ALL_COMPARISON_EPOCHS" | wc -l)
+                if [ "$EPOCH_COUNT" -gt 0 ]; then
+                    echo "  正在为 $EPOCH_COUNT 个epoch生成对比图..."
+                    
+                    while read -r EPOCH_NUM; do
+                        if [ -z "$EPOCH_NUM" ]; then
+                            continue
+                        fi
+                        
+                        COMPARISON_DIR="$OUTPUT_BASE/$SELECTED_DIR_NAME/comparisons/epochs_$((10#$EPOCH_NUM))"
+                        
+                        # Check if comparison already exists
+                        if [ -d "$COMPARISON_DIR" ]; then
+                            COMP_COUNT=$(find "$COMPARISON_DIR" -maxdepth 1 -name "*_comparison.png" -type f 2>/dev/null | wc -l)
+                            if [ "$COMP_COUNT" -gt 0 ]; then
+                                echo "  ✓ epoch=$EPOCH_NUM 对比图已存在"
+                                continue
+                            fi
+                        fi
+                        
+                        # Generate comparison
+                        echo "  → epoch=$EPOCH_NUM 生成对比图..."
+                        ERROR_LOG=$(mktemp)
+                        python scripts/create_comparison_grid.py \
+                            "$OUTPUT_BASE/$SELECTED_DIR_NAME" \
+                            "$DEFAULT_GT_IMG" \
+                            "$EPOCH_NUM" 2> "$ERROR_LOG"
+                        
+                        if [ $? -eq 0 ]; then
+                            echo "    ✓ 完成"
+                        else
+                            echo "    ⚠️  失败"
+                            # Show error details
+                            if [ -s "$ERROR_LOG" ]; then
+                                echo "    错误信息："
+                                cat "$ERROR_LOG" | sed 's/^/      /'
+                                echo ""
+                                echo "    🔍 运行诊断命令查看详细信息:"
+                                echo "      python scripts/debug_comparison.py \\"
+                                echo "        '$OUTPUT_BASE/$SELECTED_DIR_NAME' \\"
+                                echo "        '$DEFAULT_GT_IMG' \\"
+                                echo "        '$EPOCH_NUM'"
+                            fi
+                        fi
+                        rm -f "$ERROR_LOG"
+                    done < <(sort -u "$ALL_COMPARISON_EPOCHS")
+                    
+                    echo ""
+                    echo "  ✅ 对比图生成完成"
+                    echo ""
+                fi
+                
+                rm -f "$ALL_COMPARISON_EPOCHS"
+            fi
+            
+            # Final summary
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            if [ "$MISSING_COUNT" -gt 0 ] && [ "$COMPARISON_MISSING_COUNT" -gt 0 ]; then
+                echo "✅ 补充完成：$MISSING_COUNT 项推理/metrics + $COMPARISON_MISSING_COUNT 个对比图"
+            elif [ "$MISSING_COUNT" -gt 0 ]; then
+                echo "✅ 补充完成：$MISSING_COUNT 项推理/metrics"
+            elif [ "$COMPARISON_MISSING_COUNT" -gt 0 ]; then
+                echo "✅ 补充完成：$COMPARISON_MISSING_COUNT 个对比图"
+            fi
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+        else
+            echo "  ✅ 所有checkpoint的推理结果和对比图都完整，无需补充"
+            echo ""
+        fi
+        
+        rm -f "$MISSING_TASKS" "$MISSING_COMPARISONS"
+        
+        # Generate overall report (always do this after checking)
+        echo "📊 生成总体报告..."
+        RESULTS_PATH="$OUTPUT_BASE/$SELECTED_DIR_NAME"
+        if [ -d "$RESULTS_PATH" ]; then
+            ERROR_LOG=$(mktemp)
+            python scripts/generate_metrics_report.py "$RESULTS_PATH" 2> "$ERROR_LOG"
+            if [ $? -eq 0 ]; then
+                # Add timestamp to report
+                DIR_NAME=$(basename "$RESULTS_PATH")
+                OUTPUT_REPORT="$RESULTS_PATH/${DIR_NAME}_inference_report.csv"
+                if [ -f "$OUTPUT_REPORT" ]; then
+                    # Remove old timestamp if exists (last 5 lines)
+                    head -n -5 "$OUTPUT_REPORT" > "${OUTPUT_REPORT}.tmp" 2>/dev/null || cp "$OUTPUT_REPORT" "${OUTPUT_REPORT}.tmp"
+                    # Add new timestamp
+                    echo "" >> "${OUTPUT_REPORT}.tmp"
+                    echo "" >> "${OUTPUT_REPORT}.tmp"
+                    echo "$(date '+%a %b %d')" >> "${OUTPUT_REPORT}.tmp"
+                    echo "$(date '+%T')" >> "${OUTPUT_REPORT}.tmp"
+                    echo "$(date '+%Z %Y')" >> "${OUTPUT_REPORT}.tmp"
+                    mv "${OUTPUT_REPORT}.tmp" "$OUTPUT_REPORT"
+                fi
+                echo "  ✅ 报告生成完成"
+            else
+                echo "  ⚠️  报告生成失败"
+                if [ -s "$ERROR_LOG" ]; then
+                    echo "  错误信息："
+                    head -n 3 "$ERROR_LOG" | sed 's/^/    /'
+                fi
+            fi
+            rm -f "$ERROR_LOG"
+        fi
+        echo ""
+    fi
+    
+    echo "📝 将跳过这 $PROCESSED_COUNT 个已有的checkpoint"
     echo ""
     echo "🔍 开始监控新checkpoint..."
     echo "   按 Ctrl+C 停止"
@@ -1517,26 +1860,44 @@ auto_monitor() {
                         if [ "$COMP_COUNT" -gt 0 ]; then
                             echo "  ✅ 对比图已存在，跳过"
                         else
+                            ERROR_LOG=$(mktemp)
                             python scripts/create_comparison_grid.py \
                                 "$OUTPUT_BASE/$SELECTED_DIR_NAME" \
                                 "$DEFAULT_GT_IMG" \
-                                "$EPOCH_NUM" > /dev/null 2>&1
+                                "$EPOCH_NUM" 2> "$ERROR_LOG"
                             if [ $? -eq 0 ]; then
                                 echo "  ✅ 对比图生成完成"
                             else
                                 echo "  ⚠️  对比图生成失败"
+                                if [ -s "$ERROR_LOG" ]; then
+                                    echo "     错误信息："
+                                    cat "$ERROR_LOG" | sed 's/^/       /'
+                                    echo ""
+                                    echo "     🔍 运行诊断命令查看详细信息:"
+                                    echo "       python scripts/debug_comparison.py '$OUTPUT_BASE/$SELECTED_DIR_NAME' '$DEFAULT_GT_IMG' '$EPOCH_NUM'"
                             fi
+                            fi
+                            rm -f "$ERROR_LOG"
                         fi
                     else
+                        ERROR_LOG=$(mktemp)
                         python scripts/create_comparison_grid.py \
                             "$OUTPUT_BASE/$SELECTED_DIR_NAME" \
                             "$DEFAULT_GT_IMG" \
-                            "$EPOCH_NUM" > /dev/null 2>&1
+                            "$EPOCH_NUM" 2> "$ERROR_LOG"
                         if [ $? -eq 0 ]; then
                             echo "  ✅ 对比图生成完成"
                         else
                             echo "  ⚠️  对比图生成失败"
+                            if [ -s "$ERROR_LOG" ]; then
+                                echo "     错误信息："
+                                cat "$ERROR_LOG" | sed 's/^/       /'
+                                echo ""
+                                echo "     🔍 运行诊断命令查看详细信息:"
+                                echo "       python scripts/debug_comparison.py '$OUTPUT_BASE/$SELECTED_DIR_NAME' '$DEFAULT_GT_IMG' '$EPOCH_NUM'"
                         fi
+                        fi
+                        rm -f "$ERROR_LOG"
                     fi
                     
                     # Generate report
