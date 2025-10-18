@@ -1338,54 +1338,62 @@ class UNetModelDualcondV2(nn.Module):
         else:
             return self.out(h)
 
-class EdgeMapProcessor(nn.Module):
-    """
-    Encode a 3-channel image of any HxW into a 4x64x64 feature map.
-    """
-    def __init__(self):
-        super().__init__()
-        self.backbone = nn.Sequential(
-            # 3 -> 32
-            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-
-            # 32 -> 64
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),  # 下采样 /2
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-
-            # 64 -> 128
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False), # 下采样 /2
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-
-            # 128 -> 128 (增强表达)
-            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-        )
-
-        self.to_four = nn.Conv2d(128, 4, kernel_size=1, bias=True)
-
-        self.pool = nn.AdaptiveAvgPool2d((64, 64))
-        # self.merge = nn.Conv2d(8, 4, kernel_size=1, bias=True)
-
-    def forward(self, edge_map, x):
-        """
-        x: (B, 3, H, W)
-        return: (B, 4, 64, 64)
-        """
-        feat = self.backbone(edge_map)          # (B, 128, H', W')
-        feat4 = self.to_four(feat)       # (B, 4,   H', W')
-        out = self.pool(feat4)           # (B, 4,   64, 64)
-        # out = self.merge(th.cat([out, x], dim=1))
-        return out
+# COMMENTED OUT: EdgeMapProcessor is no longer needed
+# We now receive edge latents directly (4-channel) instead of processing RGB edge maps (3-channel)
+# class EdgeMapProcessor(nn.Module):
+#     """
+#     Encode a 3-channel image of any HxW into a 4x64x64 feature map.
+#     """
+#     def __init__(self):
+#         super().__init__()
+#         self.backbone = nn.Sequential(
+#             # 3 -> 32
+#             nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False),
+#             nn.BatchNorm2d(32),
+#             nn.ReLU(inplace=True),
+#
+#             # 32 -> 64
+#             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),  # 下采样 /2
+#             nn.BatchNorm2d(64),
+#             nn.ReLU(inplace=True),
+#
+#             # 64 -> 128
+#             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False), # 下采样 /2
+#             nn.BatchNorm2d(128),
+#             nn.ReLU(inplace=True),
+#
+#             # 128 -> 128 (增强表达)
+#             nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=False),
+#             nn.BatchNorm2d(128),
+#             nn.ReLU(inplace=True),
+#         )
+#
+#         self.to_four = nn.Conv2d(128, 4, kernel_size=1, bias=True)
+#
+#         self.pool = nn.AdaptiveAvgPool2d((64, 64))
+#         # self.merge = nn.Conv2d(8, 4, kernel_size=1, bias=True)
+#
+#     def forward(self, edge_map, x):
+#         """
+#         x: (B, 3, H, W)
+#         return: (B, 4, 64, 64)
+#         """
+#         feat = self.backbone(edge_map)          # (B, 128, H', W')
+#         feat4 = self.to_four(feat)       # (B, 4,   H', W')
+#         out = self.pool(feat4)           # (B, 4,   64, 64)
+#         # out = self.merge(th.cat([out, x], dim=1))
+#         return out
 
 class EncoderUNetModelWT(nn.Module):
     """
-    The half UNet model with attention and timestep embedding.
-    For usage, see UNet.
+    Time-aware encoder UNet model with attention and timestep embedding.
+    
+    Takes edge map latents (4-channel, encoded by VAE) and produces multi-scale 
+    features conditioned on timesteps. This is the trainable time-aware encoder
+    component of StableSR.
+    
+    Input: edge_latent [N, 4, H, W] - Edge map encoded in latent space
+    Output: dict of multi-scale features at different resolutions
     """
 
     def __init__(
@@ -1416,7 +1424,10 @@ class EncoderUNetModelWT(nn.Module):
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
         
-        # self.edge_processor = EdgeMapProcessor()
+        # REMOVED: self.edge_processor = EdgeMapProcessor()
+        # No longer needed - we receive edge latents directly (4-channel)
+        # instead of processing RGB edge maps (3-channel)
+        
         self.in_channels = in_channels
         self.model_channels = model_channels
         self.out_channels = out_channels
@@ -1438,12 +1449,16 @@ class EncoderUNetModelWT(nn.Module):
             linear(time_embed_dim, time_embed_dim),
         )
 
-        print(f"in_channels: {in_channels}")
+        print(f"EncoderUNetModelWT - in_channels: {in_channels}")
+        print(f"Expected input: [N, {in_channels}, H, W] edge latents (4 channels from VAE)")
 
+        # First input block: processes edge_latent (4-channel)
+        # No longer concatenating with edge features, so in_channels=4 matches directly
         self.input_blocks = nn.ModuleList(
             [
                 TimestepEmbedSequential(
                     conv_nd(dims, in_channels, model_channels, 3, padding=1)
+                    # in_channels should be 4 from config
                 )
             ]
         )
@@ -1560,27 +1575,20 @@ class EncoderUNetModelWT(nn.Module):
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
 
-    def forward(self, x, edge_map, timesteps):
+    def forward(self, edge_latent, timesteps):
         """
-        Apply the model to an input batch.
-        :param x: an [N x 4 x 64 * 64] Tensor of inputs.
-        :param edge_map: an [N x 3 x H x W] Tensor of edge maps.
-        :param timesteps: a 1-D batch of timesteps.
-        :return: an [N x K] Tensor of outputs.
+        Apply the model to edge latent inputs with time-aware encoding.
+        
+        :param edge_latent: an [N x 4 x H x W] Tensor of edge map latents 
+                           (edge maps encoded by VAE encoder, 4 channels)
+        :param timesteps: a 1-D batch of timesteps for time conditioning
+        :return: dict of multi-scale features {resolution_str: features}
         """
-        # # Process edge map to get 4-channel features
-        # edge_feat = self.edge_processor(edge_map=edge_map, x=x)  # (N, 4, 64, 64)
+        # Use edge_latent directly - no processing or concatenation needed
+        # Edge latent is already 4-channel from VAE encoding
+        h_input = edge_latent  # (N, 4, H, W)
         
-        # # Resize edge features to match the latent spatial size
-        # if edge_feat.size(-1) != x.size(-1) or edge_feat.size(-2) != x.size(-2):
-        #     edge_feat = th.nn.functional.interpolate(edge_feat, size=(x.size(-2), x.size(-1)), mode='bilinear', align_corners=False)
-        
-        # Concatenate x and edge features
-        # h_input = th.cat([x, edge_feat], dim=1)  # (N, 8, H, W)
-        # h_input = edge_feat
-        # print(f"edge_map.shape: {edge_map.shape}")
-        h_input = th.cat([x,edge_map],dim=1)
-        
+        # Generate time embeddings
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
         result_list = []
