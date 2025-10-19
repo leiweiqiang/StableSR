@@ -779,7 +779,8 @@ class Decoder_Mix(nn.Module):
 
             if i_level != self.num_resolutions-1 and i_level != 0:
                 cur_fuse_layer = getattr(self, 'fusion_layer_{}'.format(i_level))
-                h = cur_fuse_layer(enc_fea[i_level-1], h, self.fusion_w)
+                if enc_fea is not None:
+                    h = cur_fuse_layer(enc_fea[i_level-1], h, self.fusion_w)
 
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
