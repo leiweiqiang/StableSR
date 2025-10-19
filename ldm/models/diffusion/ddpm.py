@@ -3026,8 +3026,8 @@ class LatentDiffusionSRTextWT(DDPM):
                 t_replace=None
             else:
                 ts = torch.full((b,), i, device=device, dtype=torch.long)
-                t_replace = repeat(torch.tensor([self.ori_timesteps[i]]), '1 -> b', b=img.size(0))
-                t_replace = t_replace.long().to(device)
+                t_replace = torch.tensor([self.ori_timesteps[i]], device=device, dtype=torch.long)
+                t_replace = repeat(t_replace, '1 -> b', b=img.size(0))
             if self.shorten_cond_schedule:
                 assert self.model.conditioning_key != 'hybrid'
                 tc = self.cond_ids[ts].to(cond.device)
@@ -3170,8 +3170,8 @@ class LatentDiffusionSRTextWT(DDPM):
                 t_replace=None
             else:
                 ts = torch.full((b,), i, device=device, dtype=torch.long)
-                t_replace = repeat(torch.tensor([self.ori_timesteps[i]]), '1 -> b', b=batch_size)
-                t_replace = t_replace.long().to(device)
+                t_replace = torch.tensor([self.ori_timesteps[i]], device=device, dtype=torch.long)
+                t_replace = repeat(t_replace, '1 -> b', b=batch_size)
             if self.shorten_cond_schedule:
                 assert self.model.conditioning_key != 'hybrid'
                 tc = self.cond_ids[ts].to(cond.device)
@@ -6512,8 +6512,8 @@ class LatentDiffusionSRTextWT(DDPM):
                 t_replace=None
             else:
                 ts = torch.full((b,), i, device=device, dtype=torch.long)
-                t_replace = repeat(torch.tensor([self.ori_timesteps[i]]), '1 -> b', b=img.size(0))
-                t_replace = t_replace.long().to(device)
+                t_replace = torch.tensor([self.ori_timesteps[i]], device=device, dtype=torch.long)
+                t_replace = repeat(t_replace, '1 -> b', b=img.size(0))
             if self.shorten_cond_schedule:
                 assert self.model.conditioning_key != 'hybrid'
                 tc = self.cond_ids[ts].to(cond.device)
@@ -6645,8 +6645,8 @@ class LatentDiffusionSRTextWT(DDPM):
                 t_replace=None
             else:
                 ts = torch.full((b,), i, device=device, dtype=torch.long)
-                t_replace = repeat(torch.tensor([self.ori_timesteps[i]]), '1 -> b', b=batch_size)
-                t_replace = t_replace.long().to(device)
+                t_replace = torch.tensor([self.ori_timesteps[i]], device=device, dtype=torch.long)
+                t_replace = repeat(t_replace, '1 -> b', b=batch_size)
             if self.shorten_cond_schedule:
                 assert self.model.conditioning_key != 'hybrid'
                 tc = self.cond_ids[ts].to(cond.device)
