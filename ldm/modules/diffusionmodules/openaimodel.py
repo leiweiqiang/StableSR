@@ -1388,11 +1388,17 @@ class EncoderUNetModelWT(nn.Module):
     """
     Time-aware encoder UNet model with attention and timestep embedding.
     
-    Takes edge map latents (4-channel, encoded by VAE) and produces multi-scale 
+    Takes blended input latents (4-channel, encoded by VAE) and produces multi-scale 
     features conditioned on timesteps. This is the trainable time-aware encoder
     component of StableSR.
     
-    Input: edge_latent [N, 4, H, W] - Edge map encoded in latent space
+    The input is created by:
+    1. Downsampling LR image from 512x512 to 32x32
+    2. Upscaling back to 512x512 using bicubic interpolation
+    3. Alpha-blending with edge map (512x512) using PyTorch operations (equivalent to cv2.addWeighted)
+    4. Encoding the blended image to latent space via VAE
+    
+    Input: blend_latent [N, 4, H, W] - Blended input (LR upscaled + edge) in latent space
     Output: dict of multi-scale features at different resolutions
     """
 
@@ -1575,18 +1581,18 @@ class EncoderUNetModelWT(nn.Module):
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
 
-    def forward(self, edge_latent, timesteps):
+    def forward(self, blend_latent, timesteps):
         """
-        Apply the model to edge latent inputs with time-aware encoding.
+        Apply the model to blended latent inputs with time-aware encoding.
         
-        :param edge_latent: an [N x 4 x H x W] Tensor of edge map latents 
-                           (edge maps encoded by VAE encoder, 4 channels)
+        :param blend_latent: an [N x 4 x H x W] Tensor of blended input latents 
+                            (alpha-blended LR upscaled + edge map, encoded by VAE encoder)
         :param timesteps: a 1-D batch of timesteps for time conditioning
         :return: dict of multi-scale features {resolution_str: features}
         """
-        # Use edge_latent directly - no processing or concatenation needed
-        # Edge latent is already 4-channel from VAE encoding
-        h_input = edge_latent  # (N, 4, H, W)
+        # Use blended latent directly - no processing or concatenation needed
+        # Blended latent is already 4-channel from VAE encoding
+        h_input = blend_latent  # (N, 4, H, W)
         
         # Generate time embeddings
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))

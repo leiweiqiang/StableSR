@@ -28,6 +28,10 @@ model:
     p2_gamma: ~
     p2_k: ~
     ignore_keys: ['structcond_stage_model.input_blocks.0.0']
+    
+    # Blended input parameters
+    blend_alpha: 0.5  # Weight for blending: 0=all edge, 1=all LR upscaled
+    lr_size_before_upscale: 32  # Size of LR image before upscaling to 512x512
 
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModelDualcondV2

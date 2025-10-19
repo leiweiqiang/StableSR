@@ -1583,6 +1583,8 @@ class LatentDiffusionSRTextWT(DDPM):
                  use_usm=False,
                  mix_ratio=0.0,
                  edge_loss_weight=0.0,
+                 blend_alpha=0.5,
+                 lr_size_before_upscale=32,
                  *args, **kwargs):
         # put this in your init
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
@@ -1597,6 +1599,10 @@ class LatentDiffusionSRTextWT(DDPM):
         # Edge loss configuration
         self.edge_loss_weight = edge_loss_weight
         self.use_edge_loss = edge_loss_weight > 0
+        
+        # Blended input configuration
+        self.blend_alpha = blend_alpha
+        self.lr_size_before_upscale = lr_size_before_upscale
         
         assert self.num_timesteps_cond <= kwargs['timesteps']
         # for backwards compatibility after implementation of DiffusionWrapper
@@ -2128,8 +2134,33 @@ class LatentDiffusionSRTextWT(DDPM):
         encoder_posterior_y = self.encode_first_stage(y)
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
 
-        encoder_posterior_edge = self.encode_first_stage(edge)
-        z_edge = self.get_first_stage_encoding(encoder_posterior_edge).detach()
+        # ========================================================================
+        # Create blended input: (1) LR 32x32 upscaled to 512x512 + (2) edge map 512x512
+        # ========================================================================
+        
+        # Step 1: Downsample LQ to 32x32 (simulating LR input)
+        lr_small = F.interpolate(self.lq, size=(self.lr_size_before_upscale, self.lr_size_before_upscale), 
+                                 mode='bicubic', align_corners=False)
+        
+        # Step 2: Upscale back to output size (512x512) with simple upscale
+        lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
+                                     mode='bicubic', align_corners=False)
+        
+        # Step 3: Convert from [-1, 1] to [0, 1] for blending
+        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
+        edge_01 = (edge + 1.0) / 2.0
+        
+        # Step 4: Alpha blending using PyTorch operations (equivalent to cv2.addWeighted)
+        # blend_alpha controls the weight: 0=all edge, 1=all LR upscaled
+        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * edge_01
+        
+        # Step 5: Convert back to [-1, 1] range
+        blended_image = blended_image * 2.0 - 1.0
+        blended_image = torch.clamp(blended_image, -1.0, 1.0)
+        
+        # Step 6: Encode the blended image to latent space
+        encoder_posterior_blend = self.encode_first_stage(blended_image)
+        z_blend = self.get_first_stage_encoding(encoder_posterior_blend).detach()
 
         xc = None
         if self.use_positional_encodings:
@@ -2145,7 +2176,7 @@ class LatentDiffusionSRTextWT(DDPM):
 
         out = [z, text_cond]
         out.append(z_gt)
-        out.append(z_edge)  # Add encoded edge_map to output
+        out.append(z_blend)  # Add encoded blended input (LR upscaled + edge map) to output
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
@@ -2317,11 +2348,18 @@ class LatentDiffusionSRTextWT(DDPM):
             return self.first_stage_model.encode(x)
 
     def shared_step(self, batch, **kwargs):
-        x, c, gt, edge_map = self.get_input(batch, self.first_stage_key)
-        loss = self(x, c, edge_map, gt)
+        x, c, gt, z_blend = self.get_input(batch, self.first_stage_key)
+        loss = self(x, c, z_blend, gt)
         return loss
 
-    def forward(self, x, c, edge_map, gt, *args, **kwargs):
+    def forward(self, x, c, z_blend, gt, *args, **kwargs):
+        """
+        Forward pass for training.
+        :param x: Low-resolution latent (kept for compatibility)
+        :param c: Text conditioning
+        :param z_blend: Blended input latent (LR upscaled + edge map, encoded to latent space)
+        :param gt: Ground truth latent
+        """
         index = np.random.randint(0, self.num_timesteps, size=x.size(0))
         t = torch.from_numpy(index)
         t = t.to(self.device).long()
@@ -2339,11 +2377,12 @@ class LatentDiffusionSRTextWT(DDPM):
                 print(s)
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
+        # Pass blended input latent to structcond_stage_model
         if self.test_gt:
-            struc_c = self.structcond_stage_model(gt, edge_map, t_ori)
+            struc_c = self.structcond_stage_model(gt, z_blend, t_ori)
         else:
-            struc_c = self.structcond_stage_model(x, edge_map, t_ori)
-        return self.p_losses(gt, c, struc_c, t, t_ori, x, edge_map, *args, **kwargs)
+            struc_c = self.structcond_stage_model(x, z_blend, t_ori)
+        return self.p_losses(gt, c, struc_c, t, t_ori, x, z_blend, *args, **kwargs)
 
     def _rescale_annotations(self, bboxes, crop_coordinates):  # TODO: move to dataset
         def rescale_bbox(bbox):
@@ -2477,7 +2516,7 @@ class LatentDiffusionSRTextWT(DDPM):
         kl_prior = normal_kl(mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0)
         return mean_flat(kl_prior) / np.log(2.0)
 
-    def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, edge_map=None, noise=None):
+    def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_gt, z_blend=None, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
@@ -3451,8 +3490,33 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         encoder_posterior_y = self.encode_first_stage(y)
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
 
-        encoder_posterior_edge = self.encode_first_stage(edge)
-        z_edge = self.get_first_stage_encoding(encoder_posterior_edge).detach()
+        # ========================================================================
+        # Create blended input: (1) LR 32x32 upscaled to 512x512 + (2) edge map 512x512
+        # ========================================================================
+        
+        # Step 1: Downsample LQ to 32x32 (simulating LR input)
+        lr_small = F.interpolate(self.lq, size=(self.lr_size_before_upscale, self.lr_size_before_upscale), 
+                                 mode='bicubic', align_corners=False)
+        
+        # Step 2: Upscale back to output size (512x512) with simple upscale
+        lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
+                                     mode='bicubic', align_corners=False)
+        
+        # Step 3: Convert from [-1, 1] to [0, 1] for blending
+        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
+        edge_01 = (edge + 1.0) / 2.0
+        
+        # Step 4: Alpha blending using PyTorch operations (equivalent to cv2.addWeighted)
+        # blend_alpha controls the weight: 0=all edge, 1=all LR upscaled
+        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * edge_01
+        
+        # Step 5: Convert back to [-1, 1] range
+        blended_image = blended_image * 2.0 - 1.0
+        blended_image = torch.clamp(blended_image, -1.0, 1.0)
+        
+        # Step 6: Encode the blended image to latent space
+        encoder_posterior_blend = self.encode_first_stage(blended_image)
+        z_blend = self.get_first_stage_encoding(encoder_posterior_blend).detach()
 
         xc = None
         if self.use_positional_encodings:
@@ -3464,6 +3528,20 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
             text_cond.append(text_cond[-1])
         if len(text_cond) > z.size(0):
             text_cond = text_cond[:z.size(0)]
+        assert len(text_cond) == z.size(0)
+
+        out = [z, text_cond]
+        out.append(z_gt)
+        out.append(z_blend)  # Add encoded blended input (LR upscaled + edge map) to output
+
+        if return_first_stage_outputs:
+            xrec = self.decode_first_stage(z_gt)
+            out.extend([x, self.gt, xrec])
+        if return_original_cond:
+            out.append(xc)
+
+        return out
+
 """
 wild mixture of
 https://github.com/lucidrains/denoising-diffusion-pytorch/blob/7706bdfc6f527f58d33f84b7b522e61e6e3164b3/denoising_diffusion_pytorch/denoising_diffusion_pytorch.py
@@ -5049,6 +5127,8 @@ class LatentDiffusionSRTextWT(DDPM):
                  time_replace=None,
                  use_usm=False,
                  mix_ratio=0.0,
+                 blend_alpha=0.5,
+                 lr_size_before_upscale=32,
                  *args, **kwargs):
         # put this in your init
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
@@ -5059,6 +5139,11 @@ class LatentDiffusionSRTextWT(DDPM):
         self.time_replace = time_replace
         self.use_usm = use_usm
         self.mix_ratio = mix_ratio
+        
+        # Blended input configuration
+        self.blend_alpha = blend_alpha
+        self.lr_size_before_upscale = lr_size_before_upscale
+        
         assert self.num_timesteps_cond <= kwargs['timesteps']
         # for backwards compatibility after implementation of DiffusionWrapper
         if conditioning_key is None:
@@ -5561,8 +5646,7 @@ class LatentDiffusionSRTextWT(DDPM):
         self.lq = torch.clamp(self.lq, -1.0, 1.0)
 
         # ========================================================================
-        # MODIFIED: Generate Canny edge from GT using EdgeMapGenerator
-        # Instead of using LR image, we now use GT's Canny edge as input
+        # MODIFIED: Create blended input from LR upscaled + Canny edge
         # ========================================================================
         
         # Generate Canny edge from GT image
@@ -5572,7 +5656,7 @@ class LatentDiffusionSRTextWT(DDPM):
             input_format='RGB',         # Image format
             normalize_range='[-1,1]'    # Input range
         )
-        # canny_edge: [B, 3, H, W] in [-1, 1] range, ready for VAE encoding
+        # canny_edge: [B, 3, H, W] in [-1, 1] range
         
         # Prepare data for encoding
         y = self.gt
@@ -5584,13 +5668,37 @@ class LatentDiffusionSRTextWT(DDPM):
         y = y.to(self.device)
         canny_edge = canny_edge.to(self.device)
         
-        # Encode Canny edge through VAE to get latent representation
-        encoder_posterior_canny = self.encode_first_stage(canny_edge)
-        z_canny = self.get_first_stage_encoding(encoder_posterior_canny).detach()
-        
         # Encode GT through VAE to get latent representation
         encoder_posterior_y = self.encode_first_stage(y)
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
+        
+        # ========================================================================
+        # Create blended input: (1) LR 32x32 upscaled to 512x512 + (2) Canny edge 512x512
+        # ========================================================================
+        
+        # Step 1: Downsample LQ to 32x32 (simulating LR input)
+        lr_small = F.interpolate(self.lq, size=(self.lr_size_before_upscale, self.lr_size_before_upscale), 
+                                 mode='bicubic', align_corners=False)
+        
+        # Step 2: Upscale back to output size (512x512) with simple upscale
+        lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
+                                     mode='bicubic', align_corners=False)
+        
+        # Step 3: Convert from [-1, 1] to [0, 1] for blending
+        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
+        canny_edge_01 = (canny_edge + 1.0) / 2.0
+        
+        # Step 4: Alpha blending using PyTorch operations (equivalent to cv2.addWeighted)
+        # blend_alpha controls the weight: 0=all edge, 1=all LR upscaled
+        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * canny_edge_01
+        
+        # Step 5: Convert back to [-1, 1] range
+        blended_image = blended_image * 2.0 - 1.0
+        blended_image = torch.clamp(blended_image, -1.0, 1.0)
+        
+        # Step 6: Encode the blended image to latent space
+        encoder_posterior_blend = self.encode_first_stage(blended_image)
+        z_blend = self.get_first_stage_encoding(encoder_posterior_blend).detach()
 
         xc = None
         if self.use_positional_encodings:
@@ -5604,14 +5712,13 @@ class LatentDiffusionSRTextWT(DDPM):
             text_cond = text_cond[:z_gt.size(0)]
         assert len(text_cond) == z_gt.size(0)
 
-        # Return: [canny_latent, text_cond, gt_latent] (3 items instead of 4)
-        out = [z_canny, text_cond]  # z_canny = Canny edge latent
+        # Return: [blended_latent, text_cond, gt_latent]
+        out = [z_blend, text_cond]  # z_blend = Blended input latent (LR upscaled + Canny edge)
         out.append(z_gt)  # GT latent
-        # REMOVED: out.append(edge)  # No longer return edge_map
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
-            out.extend([canny_edge, self.gt, xrec])  # Return canny_edge instead of LR
+            out.extend([blended_image, self.gt, xrec])  # Return blended_image (before encoding)
         if return_original_cond:
             out.append(xc)
 
@@ -5779,17 +5886,23 @@ class LatentDiffusionSRTextWT(DDPM):
             return self.first_stage_model.encode(x)
 
     def shared_step(self, batch, **kwargs):
-        canny_latent, c, gt = self.get_input(batch, self.first_stage_key)
-        loss = self(canny_latent, c, gt)
+        z_blend, c, gt = self.get_input(batch, self.first_stage_key)
+        loss = self(z_blend, c, gt)
         return loss
 
-    def forward(self, canny_latent, c, gt, *args, **kwargs):
-        index = np.random.randint(0, self.num_timesteps, size=canny_latent.size(0))
+    def forward(self, z_blend, c, gt, *args, **kwargs):
+        """
+        Forward pass for training.
+        :param z_blend: Blended input latent (LR upscaled + Canny edge, encoded to latent space)
+        :param c: Text conditioning
+        :param gt: Ground truth latent
+        """
+        index = np.random.randint(0, self.num_timesteps, size=z_blend.size(0))
         t = torch.from_numpy(index)
         t = t.to(self.device).long()
 
         t_ori = torch.tensor([self.ori_timesteps[index_i] for index_i in index])
-        t_ori = t_ori.long().to(canny_latent.device)
+        t_ori = t_ori.long().to(z_blend.device)
 
         if self.model.conditioning_key is not None:
             assert c is not None
@@ -5802,13 +5915,13 @@ class LatentDiffusionSRTextWT(DDPM):
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
         
-        # Call structcond_stage_model with canny_latent only (removed edge_map)
+        # Pass blended input latent to structcond_stage_model
         if self.test_gt:
             struc_c = self.structcond_stage_model(gt, t_ori)
         else:
-            struc_c = self.structcond_stage_model(canny_latent, t_ori)
+            struc_c = self.structcond_stage_model(z_blend, t_ori)
         
-        return self.p_losses(gt, c, struc_c, t, t_ori, canny_latent, *args, **kwargs)
+        return self.p_losses(gt, c, struc_c, t, t_ori, z_blend, *args, **kwargs)
 
     def _rescale_annotations(self, bboxes, crop_coordinates):  # TODO: move to dataset
         def rescale_bbox(bbox):
@@ -5942,7 +6055,7 @@ class LatentDiffusionSRTextWT(DDPM):
         kl_prior = normal_kl(mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0)
         return mean_flat(kl_prior) / np.log(2.0)
 
-    def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_canny, noise=None):
+    def p_losses(self, x_start, cond, struct_cond, t, t_ori, z_blend, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
@@ -6823,8 +6936,7 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         self.lq = torch.clamp(self.lq, -1.0, 1.0)
 
         # ========================================================================
-        # MODIFIED: Generate Canny edge from GT using EdgeMapGenerator
-        # (Same modification as LatentDiffusionSRTextWT)
+        # MODIFIED: Create blended input from LR upscaled + Canny edge
         # ========================================================================
         
         # Generate Canny edge from GT image
@@ -6844,13 +6956,36 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         y = y.to(self.device)
         canny_edge = canny_edge.to(self.device)
         
-        # Encode Canny edge through VAE
-        encoder_posterior_canny = self.encode_first_stage(canny_edge)
-        z_canny = self.get_first_stage_encoding(encoder_posterior_canny).detach()
-        
         # Encode GT through VAE
         encoder_posterior_y = self.encode_first_stage(y)
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
+        
+        # ========================================================================
+        # Create blended input: (1) LR 32x32 upscaled to output size + (2) Canny edge
+        # ========================================================================
+        
+        # Step 1: Downsample LQ to 32x32
+        lr_small = F.interpolate(self.lq, size=(self.lr_size_before_upscale, self.lr_size_before_upscale), 
+                                 mode='bicubic', align_corners=False)
+        
+        # Step 2: Upscale back to output size
+        lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
+                                     mode='bicubic', align_corners=False)
+        
+        # Step 3: Convert from [-1, 1] to [0, 1] for blending
+        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
+        canny_edge_01 = (canny_edge + 1.0) / 2.0
+        
+        # Step 4: Alpha blending (equivalent to cv2.addWeighted)
+        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * canny_edge_01
+        
+        # Step 5: Convert back to [-1, 1] range
+        blended_image = blended_image * 2.0 - 1.0
+        blended_image = torch.clamp(blended_image, -1.0, 1.0)
+        
+        # Step 6: Encode the blended image to latent space
+        encoder_posterior_blend = self.encode_first_stage(blended_image)
+        z_blend = self.get_first_stage_encoding(encoder_posterior_blend).detach()
 
         xc = None
         if self.use_positional_encodings:
@@ -6864,14 +6999,13 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
             text_cond = text_cond[:z_gt.size(0)]
         assert len(text_cond) == z_gt.size(0)
 
-        # Return: [canny_latent, text_cond, gt_latent]
-        out = [z_canny, text_cond]
+        # Return: [blended_latent, text_cond, gt_latent]
+        out = [z_blend, text_cond]
         out.append(z_gt)
-        # REMOVED: out.append(edge)
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
-            out.extend([canny_edge, self.gt, xrec])
+            out.extend([blended_image, self.gt, xrec])
         if return_original_cond:
             out.append(xc)
 
