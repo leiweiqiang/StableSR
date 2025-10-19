@@ -124,6 +124,7 @@ def create_blended_input(lr_image, edge_map, blend_alpha=0.5, output_size=512):
     
     Returns:
         blended_image: Tensor [1, 3, 512, 512] in range [-1, 1]
+        lr_upscaled: Tensor [1, 3, 512, 512] in range [-1, 1] (upscaled LR)
     """
     # Step 1: Upscale LR to output size using bicubic interpolation
     lr_upscaled = F.interpolate(
@@ -145,7 +146,7 @@ def create_blended_input(lr_image, edge_map, blend_alpha=0.5, output_size=512):
     blended_image = 2.0 * blended - 1.0
     blended_image = torch.clamp(blended_image, -1.0, 1.0)
     
-    return blended_image
+    return blended_image, lr_upscaled
 
 
 def setup_timesteps(model, ddpm_steps):
@@ -311,12 +312,14 @@ def inference_single_image(
     
     # 2. Create blended image
     print(f"\nStep 2/8: Creating blended image (alpha={blend_alpha})...")
-    blended_image = create_blended_input(lr_image, edge_map, blend_alpha, output_size)
+    blended_image, lr_upscaled = create_blended_input(lr_image, edge_map, blend_alpha, output_size)
     print(f"  Blended image shape: {blended_image.shape}")
     print(f"  Blended image range: [{blended_image.min():.3f}, {blended_image.max():.3f}]")
+    print(f"  LR upscaled shape: {lr_upscaled.shape}")
     
     if save_intermediates:
         intermediates['blended_image'] = blended_image
+        intermediates['lr_upscaled'] = lr_upscaled
     
     # 3. Encode blended image to latent space
     print("\nStep 3/8: Encoding blended image to latent space...")
@@ -415,15 +418,26 @@ def inference_single_image(
     blended_np = 255.0 * rearrange(blended_vis[0].cpu().numpy(), 'c h w -> h w c')
     blended_pil = Image.fromarray(blended_np.astype(np.uint8))
     
+    # Convert LR upscaled to PIL for saving
+    lr_upscaled_vis = torch.clamp((lr_upscaled + 1.0) / 2.0, min=0.0, max=1.0)
+    lr_upscaled_np = 255.0 * rearrange(lr_upscaled_vis[0].cpu().numpy(), 'c h w -> h w c')
+    lr_upscaled_pil = Image.fromarray(lr_upscaled_np.astype(np.uint8))
+    
+    # Convert edge map to PIL for saving
+    edge_vis = torch.clamp((edge_map + 1.0) / 2.0, min=0.0, max=1.0)
+    edge_np = 255.0 * rearrange(edge_vis[0].cpu().numpy(), 'c h w -> h w c')
+    edge_pil = Image.fromarray(edge_np.astype(np.uint8))
+    
     if save_intermediates:
         intermediates['samples'] = samples
         intermediates['decoded'] = x_samples
         intermediates['lr_input'] = lr_image
         intermediates['edge_input'] = edge_map
         intermediates['blended_image'] = blended_image
-        return output_image, blended_pil, intermediates
+        intermediates['lr_upscaled'] = lr_upscaled
+        return output_image, blended_pil, lr_upscaled_pil, edge_pil, intermediates
     
-    return output_image, blended_pil, None
+    return output_image, blended_pil, lr_upscaled_pil, edge_pil, None
 
 
 def batch_inference(
@@ -481,7 +495,7 @@ def batch_inference(
         print(f"{'='*60}")
         
         try:
-            output_image, blended_pil, _ = inference_single_image(
+            output_image, blended_pil, lr_upscaled_pil, edge_pil, _ = inference_single_image(
                 model,
                 lr_path,
                 edge_path,
@@ -501,6 +515,16 @@ def batch_inference(
             blended_path = os.path.join(output_dir, f"{name_no_ext}_blended.png")
             blended_pil.save(blended_path)
             print(f"✓ Saved blended: {blended_path}")
+            
+            # Save LR upscaled
+            lr_upscaled_path = os.path.join(output_dir, f"{name_no_ext}_lr_upscaled.png")
+            lr_upscaled_pil.save(lr_upscaled_path)
+            print(f"✓ Saved LR upscaled: {lr_upscaled_path}")
+            
+            # Save edge map
+            edge_path_out = os.path.join(output_dir, f"{name_no_ext}_edge.png")
+            edge_pil.save(edge_path_out)
+            print(f"✓ Saved edge map: {edge_path_out}")
             
         except Exception as e:
             print(f"\n✗ Error processing {basename}: {str(e)}")
@@ -707,7 +731,7 @@ def main():
         )
     else:
         # Single image processing
-        output_image, blended_pil, intermediates = inference_single_image(
+        output_image, blended_pil, lr_upscaled_pil, edge_pil, intermediates = inference_single_image(
             model,
             args.lr_img,
             args.edge_img,
@@ -731,6 +755,16 @@ def main():
         blended_path = os.path.join(args.outdir, "blended_input.png")
         blended_pil.save(blended_path)
         print(f"✓ Blended input saved to: {blended_path}")
+        
+        # Save LR upscaled image
+        lr_upscaled_path = os.path.join(args.outdir, "lr_upscaled.png")
+        lr_upscaled_pil.save(lr_upscaled_path)
+        print(f"✓ LR upscaled saved to: {lr_upscaled_path}")
+        
+        # Save edge map image
+        edge_path_out = os.path.join(args.outdir, "edge_input.png")
+        edge_pil.save(edge_path_out)
+        print(f"✓ Edge input saved to: {edge_path_out}")
         
         # Save intermediates if requested
         if args.save_intermediates and intermediates:
@@ -765,7 +799,7 @@ def main():
             print("\nCreating comparison grid...")
             lr_image_grid = load_lr_image(args.lr_img, size=args.lr_size).to(next(model.parameters()).device)
             edge_map_grid = load_edge_map(args.edge_img, size=args.output_size).to(next(model.parameters()).device)
-            blended_image_grid = create_blended_input(lr_image_grid, edge_map_grid, args.blend_alpha, args.output_size)
+            blended_image_grid, _ = create_blended_input(lr_image_grid, edge_map_grid, args.blend_alpha, args.output_size)
             
             grid_path = os.path.join(args.outdir, "comparison_grid.png")
             save_comparison_grid(lr_image_grid, edge_map_grid, blended_image_grid, output_image, grid_path)
