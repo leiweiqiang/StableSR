@@ -2146,16 +2146,15 @@ class LatentDiffusionSRTextWT(DDPM):
         lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
                                      mode='bicubic', align_corners=False)
         
-        # Step 3: Convert from [-1, 1] to [0, 1] for blending
-        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
-        edge_01 = (edge + 1.0) / 2.0
+        # Step 3: Convert from [-1, 1] to [0, 255] uint8 for XOR operation
+        lr_upscaled_255 = torch.clamp((lr_upscaled + 1.0) / 2.0 * 255.0, 0, 255).to(torch.uint8)
+        edge_255 = torch.clamp((edge + 1.0) / 2.0 * 255.0, 0, 255).to(torch.uint8)
         
-        # Step 4: Alpha blending using PyTorch operations (equivalent to cv2.addWeighted)
-        # blend_alpha controls the weight: 0=all edge, 1=all LR upscaled
-        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * edge_01
+        # Step 4: Apply XOR operation (bitwise)
+        blended_255 = torch.bitwise_xor(lr_upscaled_255, edge_255)
         
         # Step 5: Convert back to [-1, 1] range
-        blended_image = blended_image * 2.0 - 1.0
+        blended_image = (blended_255.to(torch.float32) / 255.0) * 2.0 - 1.0
         blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
         # Step 6: Encode the blended image to latent space
@@ -3502,16 +3501,15 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
                                      mode='bicubic', align_corners=False)
         
-        # Step 3: Convert from [-1, 1] to [0, 1] for blending
-        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
-        edge_01 = (edge + 1.0) / 2.0
+        # Step 3: Convert from [-1, 1] to [0, 255] uint8 for XOR operation
+        lr_upscaled_255 = torch.clamp((lr_upscaled + 1.0) / 2.0 * 255.0, 0, 255).to(torch.uint8)
+        edge_255 = torch.clamp((edge + 1.0) / 2.0 * 255.0, 0, 255).to(torch.uint8)
         
-        # Step 4: Alpha blending using PyTorch operations (equivalent to cv2.addWeighted)
-        # blend_alpha controls the weight: 0=all edge, 1=all LR upscaled
-        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * edge_01
+        # Step 4: Apply XOR operation (bitwise)
+        blended_255 = torch.bitwise_xor(lr_upscaled_255, edge_255)
         
         # Step 5: Convert back to [-1, 1] range
-        blended_image = blended_image * 2.0 - 1.0
+        blended_image = (blended_255.to(torch.float32) / 255.0) * 2.0 - 1.0
         blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
         # Step 6: Encode the blended image to latent space
@@ -5684,16 +5682,15 @@ class LatentDiffusionSRTextWT(DDPM):
         lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
                                      mode='bicubic', align_corners=False)
         
-        # Step 3: Convert from [-1, 1] to [0, 1] for blending
-        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
-        canny_edge_01 = (canny_edge + 1.0) / 2.0
+        # Step 3: Convert from [-1, 1] to [0, 255] uint8 for XOR operation
+        lr_upscaled_255 = torch.clamp((lr_upscaled + 1.0) / 2.0 * 255.0, 0, 255).to(torch.uint8)
+        canny_edge_255 = torch.clamp((canny_edge + 1.0) / 2.0 * 255.0, 0, 255).to(torch.uint8)
         
-        # Step 4: Alpha blending using PyTorch operations (equivalent to cv2.addWeighted)
-        # blend_alpha controls the weight: 0=all edge, 1=all LR upscaled
-        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * canny_edge_01
+        # Step 4: Apply XOR operation (bitwise)
+        blended_255 = torch.bitwise_xor(lr_upscaled_255, canny_edge_255)
         
         # Step 5: Convert back to [-1, 1] range
-        blended_image = blended_image * 2.0 - 1.0
+        blended_image = (blended_255.to(torch.float32) / 255.0) * 2.0 - 1.0
         blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
         # Step 6: Encode the blended image to latent space
