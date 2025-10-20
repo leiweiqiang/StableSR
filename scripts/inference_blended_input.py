@@ -112,14 +112,14 @@ def load_edge_map(path, size=512):
 
 def create_blended_input(lr_image, edge_map, blend_alpha=0.5, output_size=512):
     """
-    Create blended image from LR and edge map using XOR operation
+    Create blended image from LR and edge map using alpha blending
     
-    XOR blending: bitwise XOR operation between upscaled LR and edge map
+    Equivalent to: cv2.addWeighted(lr_upscaled, alpha, edge, 1-alpha, 0)
     
     Args:
         lr_image: Tensor [1, 3, 32, 32] in range [-1, 1]
         edge_map: Tensor [1, 3, 512, 512] in range [-1, 1]
-        blend_alpha: (Unused for XOR, kept for API compatibility)
+        blend_alpha: Blending weight (0=all edge, 1=all LR upscaled)
         output_size: Target output size (default 512)
     
     Returns:
@@ -134,15 +134,16 @@ def create_blended_input(lr_image, edge_map, blend_alpha=0.5, output_size=512):
         align_corners=False
     )
     
-    # Step 2: Convert from [-1, 1] to [0, 255] uint8 for XOR operation
-    lr_upscaled_255 = torch.clamp((lr_upscaled + 1.0) / 2.0 * 255.0, 0, 255).to(torch.uint8)
-    edge_255 = torch.clamp((edge_map + 1.0) / 2.0 * 255.0, 0, 255).to(torch.uint8)
+    # Step 2: Convert from [-1, 1] to [0, 1] for blending
+    lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
+    edge_01 = (edge_map + 1.0) / 2.0
     
-    # Step 3: Apply XOR operation (bitwise)
-    blended_255 = torch.bitwise_xor(lr_upscaled_255, edge_255)
+    # Step 3: Alpha blending using PyTorch operations
+    # This is equivalent to cv2.addWeighted(lr_up, alpha, edge, 1-alpha, 0)
+    blended = blend_alpha * lr_upscaled_01 + (1.0 - blend_alpha) * edge_01
     
     # Step 4: Convert back to [-1, 1] range
-    blended_image = (blended_255.to(torch.float32) / 255.0) * 2.0 - 1.0
+    blended_image = 2.0 * blended - 1.0
     blended_image = torch.clamp(blended_image, -1.0, 1.0)
     
     return blended_image, lr_upscaled
