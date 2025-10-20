@@ -2171,19 +2171,19 @@ class LatentDiffusionSRTextWT(DDPM):
             pos_x, pos_y = self.compute_latent_shifts(batch)
             c = {'pos_x': pos_x, 'pos_y': pos_y}
 
-        while len(text_cond) < z.size(0):
+        while len(text_cond) < z_blend.size(0):
             text_cond.append(text_cond[-1])
-        if len(text_cond) > z.size(0):
-            text_cond = text_cond[:z.size(0)]
-        assert len(text_cond) == z.size(0)
+        if len(text_cond) > z_blend.size(0):
+            text_cond = text_cond[:z_blend.size(0)]
+        assert len(text_cond) == z_blend.size(0)
 
-        out = [z, text_cond]
+        # Return: [blended_latent, text_cond, gt_latent]
+        out = [z_blend, text_cond]
         out.append(z_gt)
-        out.append(z_blend)  # Add encoded blended input (LR upscaled + edge map) to output
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
-            out.extend([x, self.gt, xrec])
+            out.extend([edge, blended_image, self.gt, xrec])
         if return_original_cond:
             out.append(xc)
 
@@ -3528,19 +3528,19 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
             pos_x, pos_y = self.compute_latent_shifts(batch)
             c = {'pos_x': pos_x, 'pos_y': pos_y}
 
-        while len(text_cond) < z.size(0):
+        while len(text_cond) < z_blend.size(0):
             text_cond.append(text_cond[-1])
-        if len(text_cond) > z.size(0):
-            text_cond = text_cond[:z.size(0)]
-        assert len(text_cond) == z.size(0)
+        if len(text_cond) > z_blend.size(0):
+            text_cond = text_cond[:z_blend.size(0)]
+        assert len(text_cond) == z_blend.size(0)
 
-        out = [z, text_cond]
+        # Return: [blended_latent, text_cond, gt_latent]
+        out = [z_blend, text_cond]
         out.append(z_gt)
-        out.append(z_blend)  # Add encoded blended input (LR upscaled + edge map) to output
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
-            out.extend([x, self.gt, xrec])
+            out.extend([edge, blended_image, self.gt, xrec])
         if return_original_cond:
             out.append(xc)
 
@@ -5713,11 +5713,11 @@ class LatentDiffusionSRTextWT(DDPM):
             pos_x, pos_y = self.compute_latent_shifts(batch)
             c = {'pos_x': pos_x, 'pos_y': pos_y}
 
-        while len(text_cond) < z_gt.size(0):
+        while len(text_cond) < z_blend.size(0):
             text_cond.append(text_cond[-1])
-        if len(text_cond) > z_gt.size(0):
-            text_cond = text_cond[:z_gt.size(0)]
-        assert len(text_cond) == z_gt.size(0)
+        if len(text_cond) > z_blend.size(0):
+            text_cond = text_cond[:z_blend.size(0)]
+        assert len(text_cond) == z_blend.size(0)
 
         # Return: [blended_latent, text_cond, gt_latent]
         out = [z_blend, text_cond]  # z_blend = Blended input latent (LR upscaled + Canny edge)
@@ -5725,7 +5725,7 @@ class LatentDiffusionSRTextWT(DDPM):
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
-            out.extend([blended_image, self.gt, xrec])  # Return blended_image (before encoding)
+            out.extend([canny_edge, blended_image, self.gt, xrec])  # Return canny_edge and blended_image (before encoding)
         if return_original_cond:
             out.append(xc)
 
@@ -7012,7 +7012,7 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
 
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z_gt)
-            out.extend([blended_image, self.gt, xrec])
+            out.extend([canny_edge, blended_image, self.gt, xrec])
         if return_original_cond:
             out.append(xc)
 
