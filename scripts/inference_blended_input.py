@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Inference Script for Blended Input (LR 32x32 + Edge 512x512)
-==============================================================
+Inference Script for Blended Input (LR Downscaled + Edge 512x512)
+===================================================================
 
 This script performs super-resolution inference using a blended input approach:
-1. Input: LR image (32x32) + Edge map (512x512)
+1. Input: LR image (downscaled by factor, e.g., 512/16=32x32) + Edge map (512x512)
 2. Blend: Upscale LR to 512x512 and blend with edge map using two parameters
    Formula: blended = blend_alpha * lr_upscaled + blend_beta * edge
 3. Output: High-quality SR image (512x512)
@@ -15,24 +15,26 @@ encoder to generate structural conditioning for the diffusion model.
 Usage:
     # Single image inference
     python scripts/inference_blended_input.py \
-        --lr-img inputs/lr_32x32/image.png \
+        --lr-img inputs/lr_images/image.png \
         --edge-img inputs/edges_512/edge.png \
         --outdir outputs/blended_inference/ \
         --config configs/stableSRNew/v2-finetune_text_T_512_canny_in.yaml \
         --ckpt checkpoints/model.ckpt \
         --blend-alpha 0.5 \
         --blend-beta 0.5 \
+        --lr-downscale-factor 16 \
         --ddpm-steps 200
 
     # Batch processing
     python scripts/inference_blended_input.py \
-        --lr-img inputs/lr_32x32/ \
+        --lr-img inputs/lr_images/ \
         --edge-img inputs/edges_512/ \
         --outdir outputs/batch/ \
         --config configs/stableSRNew/v2-finetune_text_T_512_canny_in.yaml \
         --ckpt checkpoints/model.ckpt \
         --blend-alpha 0.5 \
         --blend-beta 0.5 \
+        --lr-downscale-factor 16 \
         --batch-mode
 
 Author: StableSR Blended Input
@@ -259,7 +261,7 @@ def inference_single_image(
     edge_map_path,
     blend_alpha=0.5,
     blend_beta=0.5,
-    lr_size=32,
+    lr_downscale_factor=16,
     output_size=512,
     ddpm_steps=200,
     seed=42,
@@ -273,11 +275,11 @@ def inference_single_image(
     
     Args:
         model: StableSR model
-        lr_image_path: Path to LR image (will be resized to lr_size)
+        lr_image_path: Path to LR image (will be resized based on downscale factor)
         edge_map_path: Path to edge map (will be resized to output_size)
         blend_alpha: Blending weight for LR upscaled image, default 0.5
         blend_beta: Blending weight for edge map, default 0.5
-        lr_size: Size of LR input, default 32
+        lr_downscale_factor: Downscale factor for LR (e.g., 16 means 512/16=32x32), default 16
         output_size: Size of output, default 512
         ddpm_steps: Number of sampling steps, default 200
         seed: Random seed
@@ -293,12 +295,17 @@ def inference_single_image(
     seed_everything(seed)
     device = next(model.parameters()).device
     
+    # Compute LR size from downscale factor
+    lr_size = output_size // lr_downscale_factor
+    
     print(f"\n{'='*60}")
     print("Inference with Blended Input")
     print(f"{'='*60}")
     print(f"LR image: {os.path.basename(lr_image_path)}")
     print(f"Edge map: {os.path.basename(edge_map_path)}")
     print(f"Blend alpha: {blend_alpha}")
+    print(f"Blend beta: {blend_beta}")
+    print(f"LR downscale factor: {lr_downscale_factor}")
     print(f"LR size: {lr_size}x{lr_size}")
     print(f"Output size: {output_size}x{output_size}")
     print(f"Sampling steps: {ddpm_steps}")
@@ -462,12 +469,12 @@ def batch_inference(
     
     Args:
         model: StableSR model
-        lr_dir: Directory containing LR images (32x32)
+        lr_dir: Directory containing LR images (will be downscaled as configured)
         edge_dir: Directory containing edge maps (512x512)
         output_dir: Output directory
         blend_alpha: Blending weight for LR upscaled image
         blend_beta: Blending weight for edge map
-        **kwargs: Additional arguments for inference_single_image
+        **kwargs: Additional arguments for inference_single_image (including lr_downscale_factor)
     """
     # Find all LR images
     lr_images = sorted(glob.glob(os.path.join(lr_dir, "*.png")) + 
@@ -629,7 +636,7 @@ def main():
     
     # Input arguments
     parser.add_argument("--lr-img", type=str, required=True,
-                       help="Path to LR image file or directory (32x32 or will be resized)")
+                       help="Path to LR image file or directory (will be resized based on downscale factor)")
     parser.add_argument("--edge-img", type=str, required=True,
                        help="Path to edge map file or directory (512x512 or will be resized)")
     parser.add_argument("--outdir", type=str, default="outputs/blended_inference/",
@@ -647,8 +654,8 @@ def main():
                        help="Blending weight for LR upscaled image (default: 0.5)")
     parser.add_argument("--blend-beta", type=float, default=0.5,
                        help="Blending weight for edge map (default: 0.5)")
-    parser.add_argument("--lr-size", type=int, default=32,
-                       help="Size of LR input (default: 32)")
+    parser.add_argument("--lr-downscale-factor", type=int, default=16,
+                       help="Downscale factor for LR (e.g., 16 means 512/16=32x32) (default: 16)")
     parser.add_argument("--output-size", type=int, default=512,
                        help="Size of output image (default: 512)")
     parser.add_argument("--ddpm-steps", type=int, default=200,
@@ -734,7 +741,7 @@ def main():
             args.outdir,
             blend_alpha=args.blend_alpha,
             blend_beta=args.blend_beta,
-            lr_size=args.lr_size,
+            lr_downscale_factor=args.lr_downscale_factor,
             output_size=args.output_size,
             ddpm_steps=args.ddpm_steps,
             seed=args.seed,
@@ -751,7 +758,7 @@ def main():
             args.edge_img,
             blend_alpha=args.blend_alpha,
             blend_beta=args.blend_beta,
-            lr_size=args.lr_size,
+            lr_downscale_factor=args.lr_downscale_factor,
             output_size=args.output_size,
             ddpm_steps=args.ddpm_steps,
             seed=args.seed,
@@ -812,7 +819,8 @@ def main():
         # Save comparison grid if requested
         if args.save_comparison:
             print("\nCreating comparison grid...")
-            lr_image_grid = load_lr_image(args.lr_img, size=args.lr_size).to(next(model.parameters()).device)
+            lr_size_grid = args.output_size // args.lr_downscale_factor
+            lr_image_grid = load_lr_image(args.lr_img, size=lr_size_grid).to(next(model.parameters()).device)
             edge_map_grid = load_edge_map(args.edge_img, size=args.output_size).to(next(model.parameters()).device)
             blended_image_grid, _ = create_blended_input(lr_image_grid, edge_map_grid, args.blend_alpha, args.blend_beta, args.output_size)
             

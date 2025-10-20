@@ -32,7 +32,8 @@ model:
     # Blended input parameters
     blend_alpha: 1.0  # Weight for LR upscaled image
     blend_beta: 1.0   # Weight for edge map
-    lr_size_before_upscale: 32  # Size of LR image before upscaling to 512x512
+    lr_downscale_factor: 8  # Downscale factor for LR (512/16=32x32)
+                             # Options: 4(128x128), 8(64x64), 16(32x32), 32(16x16)
 
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModelDualcondV2
@@ -141,8 +142,8 @@ data:
       params:
         queue_size: 180
         #gt_path: ['/mnt/nas-dp/dataset/DIV8K/train_HR/', '/mnt/nas-dp/dataset/df2k_ost/GT/']
-        #gt_path: ['/stablesr_dataset/dataset/DIV2K/DIV2K_train_HR/']
-        gt_path: ['/stablesr_dataset/dataset/Flickr2K/']
+        gt_path: ['/stablesr_dataset/dataset/DIV2K/DIV2K_train_HR/']
+        #gt_path: ['/stablesr_dataset/dataset/Flickr2K/']
         #face_gt_path: '/mnt/nas-dp/dataset/FFHQ/1024/'
         #num_face: 10000
         crop_size: 512

@@ -1585,7 +1585,7 @@ class LatentDiffusionSRTextWT(DDPM):
                  edge_loss_weight=0.0,
                  blend_alpha=0.5,
                  blend_beta=0.5,
-                 lr_size_before_upscale=32,
+                 lr_downscale_factor=16,
                  *args, **kwargs):
         # put this in your init
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
@@ -1604,7 +1604,7 @@ class LatentDiffusionSRTextWT(DDPM):
         # Blended input configuration
         self.blend_alpha = blend_alpha
         self.blend_beta = blend_beta
-        self.lr_size_before_upscale = lr_size_before_upscale
+        self.lr_downscale_factor = lr_downscale_factor
         
         assert self.num_timesteps_cond <= kwargs['timesteps']
         # for backwards compatibility after implementation of DiffusionWrapper
@@ -2137,11 +2137,13 @@ class LatentDiffusionSRTextWT(DDPM):
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
 
         # ========================================================================
-        # Create blended input: (1) LR 32x32 upscaled to 512x512 + (2) edge map 512x512
+        # Create blended input: (1) LR downsampled & upscaled + (2) edge map 512x512
         # ========================================================================
         
-        # Step 1: Downsample LQ to 32x32 (simulating LR input)
-        lr_small = F.interpolate(self.lq, size=(self.lr_size_before_upscale, self.lr_size_before_upscale), 
+        # Step 1: Downsample LQ based on downscale factor (simulating LR input)
+        hr_size = self.gt.size(-1)  # Get HR size from ground truth (typically 512)
+        lr_size = hr_size // self.lr_downscale_factor
+        lr_small = F.interpolate(self.lq, size=(lr_size, lr_size), 
                                  mode='bicubic', align_corners=False)
         
         # Step 2: Upscale back to output size (512x512) with simple upscale
@@ -3494,11 +3496,13 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
 
         # ========================================================================
-        # Create blended input: (1) LR 32x32 upscaled to 512x512 + (2) edge map 512x512
+        # Create blended input: (1) LR downsampled & upscaled + (2) edge map 512x512
         # ========================================================================
         
-        # Step 1: Downsample LQ to 32x32 (simulating LR input)
-        lr_small = F.interpolate(self.lq, size=(self.lr_size_before_upscale, self.lr_size_before_upscale), 
+        # Step 1: Downsample LQ based on downscale factor (simulating LR input)
+        hr_size = self.gt.size(-1)  # Get HR size from ground truth (typically 512)
+        lr_size = hr_size // self.lr_downscale_factor
+        lr_small = F.interpolate(self.lq, size=(lr_size, lr_size), 
                                  mode='bicubic', align_corners=False)
         
         # Step 2: Upscale back to output size (512x512) with simple upscale
@@ -5133,7 +5137,7 @@ class LatentDiffusionSRTextWT(DDPM):
                  mix_ratio=0.0,
                  blend_alpha=0.5,
                  blend_beta=0.5,
-                 lr_size_before_upscale=32,
+                 lr_downscale_factor=16,
                  *args, **kwargs):
         # put this in your init
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
@@ -5148,7 +5152,7 @@ class LatentDiffusionSRTextWT(DDPM):
         # Blended input configuration
         self.blend_alpha = blend_alpha
         self.blend_beta = blend_beta
-        self.lr_size_before_upscale = lr_size_before_upscale
+        self.lr_downscale_factor = lr_downscale_factor
         
         assert self.num_timesteps_cond <= kwargs['timesteps']
         # for backwards compatibility after implementation of DiffusionWrapper
@@ -5679,11 +5683,13 @@ class LatentDiffusionSRTextWT(DDPM):
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
         
         # ========================================================================
-        # Create blended input: (1) LR 32x32 upscaled to 512x512 + (2) Canny edge 512x512
+        # Create blended input: (1) LR downsampled & upscaled + (2) Canny edge 512x512
         # ========================================================================
         
-        # Step 1: Downsample LQ to 32x32 (simulating LR input)
-        lr_small = F.interpolate(self.lq, size=(self.lr_size_before_upscale, self.lr_size_before_upscale), 
+        # Step 1: Downsample LQ based on downscale factor (simulating LR input)
+        hr_size = self.gt.size(-1)  # Get HR size from ground truth (typically 512)
+        lr_size = hr_size // self.lr_downscale_factor
+        lr_small = F.interpolate(self.lq, size=(lr_size, lr_size), 
                                  mode='bicubic', align_corners=False)
         
         # Step 2: Upscale back to output size (512x512) with simple upscale
@@ -6968,11 +6974,13 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
         
         # ========================================================================
-        # Create blended input: (1) LR 32x32 upscaled to output size + (2) Canny edge
+        # Create blended input: (1) LR downsampled & upscaled to output size + (2) Canny edge
         # ========================================================================
         
-        # Step 1: Downsample LQ to 32x32
-        lr_small = F.interpolate(self.lq, size=(self.lr_size_before_upscale, self.lr_size_before_upscale), 
+        # Step 1: Downsample LQ based on downscale factor
+        hr_size = self.gt.size(-1)  # Get HR size from ground truth (typically 512)
+        lr_size = hr_size // self.lr_downscale_factor
+        lr_small = F.interpolate(self.lq, size=(lr_size, lr_size), 
                                  mode='bicubic', align_corners=False)
         
         # Step 2: Upscale back to output size
