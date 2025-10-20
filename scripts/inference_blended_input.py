@@ -5,7 +5,8 @@ Inference Script for Blended Input (LR 32x32 + Edge 512x512)
 
 This script performs super-resolution inference using a blended input approach:
 1. Input: LR image (32x32) + Edge map (512x512)
-2. Blend: Upscale LR to 512x512 and alpha-blend with edge map
+2. Blend: Upscale LR to 512x512 and blend with edge map using two parameters
+   Formula: blended = blend_alpha * lr_upscaled + blend_beta * edge
 3. Output: High-quality SR image (512x512)
 
 The blended image is encoded to latent space and passed through the time-aware
@@ -20,6 +21,7 @@ Usage:
         --config configs/stableSRNew/v2-finetune_text_T_512_canny_in.yaml \
         --ckpt checkpoints/model.ckpt \
         --blend-alpha 0.5 \
+        --blend-beta 0.5 \
         --ddpm-steps 200
 
     # Batch processing
@@ -29,6 +31,8 @@ Usage:
         --outdir outputs/batch/ \
         --config configs/stableSRNew/v2-finetune_text_T_512_canny_in.yaml \
         --ckpt checkpoints/model.ckpt \
+        --blend-alpha 0.5 \
+        --blend-beta 0.5 \
         --batch-mode
 
 Author: StableSR Blended Input
@@ -110,16 +114,17 @@ def load_edge_map(path, size=512):
     return edge
 
 
-def create_blended_input(lr_image, edge_map, blend_alpha=0.5, output_size=512):
+def create_blended_input(lr_image, edge_map, blend_alpha=0.5, blend_beta=0.5, output_size=512):
     """
-    Create blended image from LR and edge map using alpha blending
+    Create blended image from LR and edge map using two-parameter blending
     
-    Equivalent to: cv2.addWeighted(lr_upscaled, alpha, edge, 1-alpha, 0)
+    Formula: blended = blend_alpha * lr_upscaled + blend_beta * edge
     
     Args:
         lr_image: Tensor [1, 3, 32, 32] in range [-1, 1]
         edge_map: Tensor [1, 3, 512, 512] in range [-1, 1]
-        blend_alpha: Blending weight (0=all edge, 1=all LR upscaled)
+        blend_alpha: Blending weight for LR upscaled image
+        blend_beta: Blending weight for edge map
         output_size: Target output size (default 512)
     
     Returns:
@@ -138,12 +143,13 @@ def create_blended_input(lr_image, edge_map, blend_alpha=0.5, output_size=512):
     lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
     edge_01 = (edge_map + 1.0) / 2.0
     
-    # Step 3: Alpha blending using PyTorch operations
-    # This is equivalent to cv2.addWeighted(lr_up, alpha, edge, 1-alpha, 0)
-    blended = blend_alpha * lr_upscaled_01 + (1.0 - blend_alpha) * edge_01
+    # Step 3: Two-parameter blending
+    # blend_alpha controls LR weight, blend_beta controls edge weight
+    blended = blend_alpha * lr_upscaled_01 + blend_beta * edge_01
+    blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
     
     # Step 4: Convert back to [-1, 1] range
-    blended_image = 2.0 * blended - 1.0
+    blended_image = blended * 2.0 - 1.0
     blended_image = torch.clamp(blended_image, -1.0, 1.0)
     
     return blended_image, lr_upscaled
@@ -252,6 +258,7 @@ def inference_single_image(
     lr_image_path,
     edge_map_path,
     blend_alpha=0.5,
+    blend_beta=0.5,
     lr_size=32,
     output_size=512,
     ddpm_steps=200,
@@ -268,7 +275,8 @@ def inference_single_image(
         model: StableSR model
         lr_image_path: Path to LR image (will be resized to lr_size)
         edge_map_path: Path to edge map (will be resized to output_size)
-        blend_alpha: Blending weight (0=all edge, 1=all LR), default 0.5
+        blend_alpha: Blending weight for LR upscaled image, default 0.5
+        blend_beta: Blending weight for edge map, default 0.5
         lr_size: Size of LR input, default 32
         output_size: Size of output, default 512
         ddpm_steps: Number of sampling steps, default 200
@@ -311,8 +319,8 @@ def inference_single_image(
         intermediates['edge_input'] = edge_map
     
     # 2. Create blended image
-    print(f"\nStep 2/8: Creating blended image (alpha={blend_alpha})...")
-    blended_image, lr_upscaled = create_blended_input(lr_image, edge_map, blend_alpha, output_size)
+    print(f"\nStep 2/8: Creating blended image (alpha={blend_alpha}, beta={blend_beta})...")
+    blended_image, lr_upscaled = create_blended_input(lr_image, edge_map, blend_alpha, blend_beta, output_size)
     print(f"  Blended image shape: {blended_image.shape}")
     print(f"  Blended image range: [{blended_image.min():.3f}, {blended_image.max():.3f}]")
     print(f"  LR upscaled shape: {lr_upscaled.shape}")
@@ -446,6 +454,7 @@ def batch_inference(
     edge_dir,
     output_dir,
     blend_alpha=0.5,
+    blend_beta=0.5,
     **kwargs
 ):
     """
@@ -456,7 +465,8 @@ def batch_inference(
         lr_dir: Directory containing LR images (32x32)
         edge_dir: Directory containing edge maps (512x512)
         output_dir: Output directory
-        blend_alpha: Blending weight
+        blend_alpha: Blending weight for LR upscaled image
+        blend_beta: Blending weight for edge map
         **kwargs: Additional arguments for inference_single_image
     """
     # Find all LR images
@@ -500,6 +510,7 @@ def batch_inference(
                 lr_path,
                 edge_path,
                 blend_alpha=blend_alpha,
+                blend_beta=blend_beta,
                 **kwargs
             )
             
@@ -633,7 +644,9 @@ def main():
     
     # Processing arguments
     parser.add_argument("--blend-alpha", type=float, default=0.5,
-                       help="Blending weight: 0=all edge, 1=all LR upscaled (default: 0.5)")
+                       help="Blending weight for LR upscaled image (default: 0.5)")
+    parser.add_argument("--blend-beta", type=float, default=0.5,
+                       help="Blending weight for edge map (default: 0.5)")
     parser.add_argument("--lr-size", type=int, default=32,
                        help="Size of LR input (default: 32)")
     parser.add_argument("--output-size", type=int, default=512,
@@ -720,6 +733,7 @@ def main():
             args.edge_img,
             args.outdir,
             blend_alpha=args.blend_alpha,
+            blend_beta=args.blend_beta,
             lr_size=args.lr_size,
             output_size=args.output_size,
             ddpm_steps=args.ddpm_steps,
@@ -736,6 +750,7 @@ def main():
             args.lr_img,
             args.edge_img,
             blend_alpha=args.blend_alpha,
+            blend_beta=args.blend_beta,
             lr_size=args.lr_size,
             output_size=args.output_size,
             ddpm_steps=args.ddpm_steps,
@@ -799,7 +814,7 @@ def main():
             print("\nCreating comparison grid...")
             lr_image_grid = load_lr_image(args.lr_img, size=args.lr_size).to(next(model.parameters()).device)
             edge_map_grid = load_edge_map(args.edge_img, size=args.output_size).to(next(model.parameters()).device)
-            blended_image_grid, _ = create_blended_input(lr_image_grid, edge_map_grid, args.blend_alpha, args.output_size)
+            blended_image_grid, _ = create_blended_input(lr_image_grid, edge_map_grid, args.blend_alpha, args.blend_beta, args.output_size)
             
             grid_path = os.path.join(args.outdir, "comparison_grid.png")
             save_comparison_grid(lr_image_grid, edge_map_grid, blended_image_grid, output_image, grid_path)

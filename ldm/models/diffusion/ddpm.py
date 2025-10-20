@@ -1584,6 +1584,7 @@ class LatentDiffusionSRTextWT(DDPM):
                  mix_ratio=0.0,
                  edge_loss_weight=0.0,
                  blend_alpha=0.5,
+                 blend_beta=0.5,
                  lr_size_before_upscale=32,
                  *args, **kwargs):
         # put this in your init
@@ -1602,6 +1603,7 @@ class LatentDiffusionSRTextWT(DDPM):
         
         # Blended input configuration
         self.blend_alpha = blend_alpha
+        self.blend_beta = blend_beta
         self.lr_size_before_upscale = lr_size_before_upscale
         
         assert self.num_timesteps_cond <= kwargs['timesteps']
@@ -2150,12 +2152,13 @@ class LatentDiffusionSRTextWT(DDPM):
         lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
         edge_01 = (edge + 1.0) / 2.0
         
-        # Step 4: Alpha blending using PyTorch operations (equivalent to cv2.addWeighted)
-        # blend_alpha controls the weight: 0=all edge, 1=all LR upscaled
-        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * edge_01
+        # Step 4: Two-parameter blending
+        # blend_alpha controls LR weight, blend_beta controls edge weight
+        blended = self.blend_alpha * lr_upscaled_01 + self.blend_beta * edge_01
+        blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
         
         # Step 5: Convert back to [-1, 1] range
-        blended_image = blended_image * 2.0 - 1.0
+        blended_image = blended * 2.0 - 1.0
         blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
         # Step 6: Encode the blended image to latent space
@@ -3506,12 +3509,13 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
         edge_01 = (edge + 1.0) / 2.0
         
-        # Step 4: Alpha blending using PyTorch operations (equivalent to cv2.addWeighted)
-        # blend_alpha controls the weight: 0=all edge, 1=all LR upscaled
-        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * edge_01
+        # Step 4: Two-parameter blending
+        # blend_alpha controls LR weight, blend_beta controls edge weight
+        blended = self.blend_alpha * lr_upscaled_01 + self.blend_beta * edge_01
+        blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
         
         # Step 5: Convert back to [-1, 1] range
-        blended_image = blended_image * 2.0 - 1.0
+        blended_image = blended * 2.0 - 1.0
         blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
         # Step 6: Encode the blended image to latent space
@@ -5128,6 +5132,7 @@ class LatentDiffusionSRTextWT(DDPM):
                  use_usm=False,
                  mix_ratio=0.0,
                  blend_alpha=0.5,
+                 blend_beta=0.5,
                  lr_size_before_upscale=32,
                  *args, **kwargs):
         # put this in your init
@@ -5142,6 +5147,7 @@ class LatentDiffusionSRTextWT(DDPM):
         
         # Blended input configuration
         self.blend_alpha = blend_alpha
+        self.blend_beta = blend_beta
         self.lr_size_before_upscale = lr_size_before_upscale
         
         assert self.num_timesteps_cond <= kwargs['timesteps']
@@ -5688,12 +5694,13 @@ class LatentDiffusionSRTextWT(DDPM):
         lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
         canny_edge_01 = (canny_edge + 1.0) / 2.0
         
-        # Step 4: Alpha blending using PyTorch operations (equivalent to cv2.addWeighted)
-        # blend_alpha controls the weight: 0=all edge, 1=all LR upscaled
-        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * canny_edge_01
+        # Step 4: Two-parameter blending
+        # blend_alpha controls LR weight, blend_beta controls edge weight
+        blended = self.blend_alpha * lr_upscaled_01 + self.blend_beta * canny_edge_01
+        blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
         
         # Step 5: Convert back to [-1, 1] range
-        blended_image = blended_image * 2.0 - 1.0
+        blended_image = blended * 2.0 - 1.0
         blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
         # Step 6: Encode the blended image to latent space

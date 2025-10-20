@@ -30,7 +30,8 @@ model:
     ignore_keys: ['structcond_stage_model.input_blocks.0.0']
     
     # Blended input parameters
-    blend_alpha: 0.5  # Weight for blending: 0=all edge, 1=all LR upscaled
+    blend_alpha: 1.0  # Weight for LR upscaled image
+    blend_beta: 1.0   # Weight for edge map
     lr_size_before_upscale: 32  # Size of LR image before upscaling to 512x512
 
     unet_config:
