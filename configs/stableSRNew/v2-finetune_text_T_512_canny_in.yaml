@@ -32,8 +32,9 @@ model:
     # Blended input parameters
     blend_alpha: 1.0  # Weight for LR upscaled image
     blend_beta: 1.0   # Weight for edge map
-    lr_downscale_factor: 8  # Downscale factor for LR (512/16=32x32)
+    lr_downscale_factor: 4  # Downscale factor for LR (512/16=32x32)
                              # Options: 4(128x128), 8(64x64), 16(32x32), 32(16x16)
+    train_with_edge: False  # If False, only use upscaled LR without edge blending during training
 
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModelDualcondV2

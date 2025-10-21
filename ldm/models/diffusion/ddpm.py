@@ -1586,6 +1586,7 @@ class LatentDiffusionSRTextWT(DDPM):
                  blend_alpha=0.5,
                  blend_beta=0.5,
                  lr_downscale_factor=16,
+                 train_with_edge=True,
                  *args, **kwargs):
         # put this in your init
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
@@ -1605,6 +1606,7 @@ class LatentDiffusionSRTextWT(DDPM):
         self.blend_alpha = blend_alpha
         self.blend_beta = blend_beta
         self.lr_downscale_factor = lr_downscale_factor
+        self.train_with_edge = train_with_edge
         
         assert self.num_timesteps_cond <= kwargs['timesteps']
         # for backwards compatibility after implementation of DiffusionWrapper
@@ -2137,33 +2139,34 @@ class LatentDiffusionSRTextWT(DDPM):
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
 
         # ========================================================================
-        # Create blended input: (1) LR downsampled & upscaled + (2) edge map 512x512
+        # Create blended input: (1) LR downsampled from GT & upscaled + (2) edge map (optional)
         # ========================================================================
         
-        # Step 1: Downsample LQ based on downscale factor (simulating LR input)
+        # Step 1: Downsample GT to simulate LR input (more direct than re-downsampling self.lq)
         hr_size = self.gt.size(-1)  # Get HR size from ground truth (typically 512)
         lr_size = hr_size // self.lr_downscale_factor
-        lr_small = F.interpolate(self.lq, size=(lr_size, lr_size), 
+        lr_small = F.interpolate(self.gt, size=(lr_size, lr_size), 
                                  mode='bicubic', align_corners=False)
         
         # Step 2: Upscale back to output size (512x512) with simple upscale
         lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
                                      mode='bicubic', align_corners=False)
         
-        # Step 3: Convert from [-1, 1] to [0, 1] for blending
-        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
-        edge_01 = (edge + 1.0) / 2.0
+        # Step 3: Conditional blending based on train_with_edge
+        if self.train_with_edge:
+            # Original behavior: blend LR upscaled + edge map
+            lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
+            edge_01 = (edge + 1.0) / 2.0
+            blended = self.blend_alpha * lr_upscaled_01 + self.blend_beta * edge_01
+            blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
+            blended_image = blended * 2.0 - 1.0
+            blended_image = torch.clamp(blended_image, -1.0, 1.0)
+        else:
+            # New behavior: use only upscaled LR (no edge blending)
+            blended_image = lr_upscaled
+            blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
-        # Step 4: Two-parameter blending
-        # blend_alpha controls LR weight, blend_beta controls edge weight
-        blended = self.blend_alpha * lr_upscaled_01 + self.blend_beta * edge_01
-        blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
-        
-        # Step 5: Convert back to [-1, 1] range
-        blended_image = blended * 2.0 - 1.0
-        blended_image = torch.clamp(blended_image, -1.0, 1.0)
-        
-        # Step 6: Encode the blended image to latent space
+        # Step 4: Encode the blended image to latent space
         encoder_posterior_blend = self.encode_first_stage(blended_image)
         z_blend = self.get_first_stage_encoding(encoder_posterior_blend).detach()
 
@@ -3496,33 +3499,34 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
 
         # ========================================================================
-        # Create blended input: (1) LR downsampled & upscaled + (2) edge map 512x512
+        # Create blended input: (1) LR downsampled from GT & upscaled + (2) edge map (optional)
         # ========================================================================
         
-        # Step 1: Downsample LQ based on downscale factor (simulating LR input)
+        # Step 1: Downsample GT to simulate LR input (more direct than re-downsampling self.lq)
         hr_size = self.gt.size(-1)  # Get HR size from ground truth (typically 512)
         lr_size = hr_size // self.lr_downscale_factor
-        lr_small = F.interpolate(self.lq, size=(lr_size, lr_size), 
+        lr_small = F.interpolate(self.gt, size=(lr_size, lr_size), 
                                  mode='bicubic', align_corners=False)
         
         # Step 2: Upscale back to output size (512x512) with simple upscale
         lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
                                      mode='bicubic', align_corners=False)
         
-        # Step 3: Convert from [-1, 1] to [0, 1] for blending
-        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
-        edge_01 = (edge + 1.0) / 2.0
+        # Step 3: Conditional blending based on train_with_edge
+        if self.train_with_edge:
+            # Original behavior: blend LR upscaled + edge map
+            lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
+            edge_01 = (edge + 1.0) / 2.0
+            blended = self.blend_alpha * lr_upscaled_01 + self.blend_beta * edge_01
+            blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
+            blended_image = blended * 2.0 - 1.0
+            blended_image = torch.clamp(blended_image, -1.0, 1.0)
+        else:
+            # New behavior: use only upscaled LR (no edge blending)
+            blended_image = lr_upscaled
+            blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
-        # Step 4: Two-parameter blending
-        # blend_alpha controls LR weight, blend_beta controls edge weight
-        blended = self.blend_alpha * lr_upscaled_01 + self.blend_beta * edge_01
-        blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
-        
-        # Step 5: Convert back to [-1, 1] range
-        blended_image = blended * 2.0 - 1.0
-        blended_image = torch.clamp(blended_image, -1.0, 1.0)
-        
-        # Step 6: Encode the blended image to latent space
+        # Step 4: Encode the blended image to latent space
         encoder_posterior_blend = self.encode_first_stage(blended_image)
         z_blend = self.get_first_stage_encoding(encoder_posterior_blend).detach()
 
@@ -5138,6 +5142,7 @@ class LatentDiffusionSRTextWT(DDPM):
                  blend_alpha=0.5,
                  blend_beta=0.5,
                  lr_downscale_factor=16,
+                 train_with_edge=True,
                  *args, **kwargs):
         # put this in your init
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
@@ -5153,6 +5158,7 @@ class LatentDiffusionSRTextWT(DDPM):
         self.blend_alpha = blend_alpha
         self.blend_beta = blend_beta
         self.lr_downscale_factor = lr_downscale_factor
+        self.train_with_edge = train_with_edge
         
         assert self.num_timesteps_cond <= kwargs['timesteps']
         # for backwards compatibility after implementation of DiffusionWrapper
@@ -5683,33 +5689,34 @@ class LatentDiffusionSRTextWT(DDPM):
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
         
         # ========================================================================
-        # Create blended input: (1) LR downsampled & upscaled + (2) Canny edge 512x512
+        # Create blended input: (1) LR downsampled from GT & upscaled + (2) Canny edge (optional)
         # ========================================================================
         
-        # Step 1: Downsample LQ based on downscale factor (simulating LR input)
+        # Step 1: Downsample GT to simulate LR input (more direct than re-downsampling self.lq)
         hr_size = self.gt.size(-1)  # Get HR size from ground truth (typically 512)
         lr_size = hr_size // self.lr_downscale_factor
-        lr_small = F.interpolate(self.lq, size=(lr_size, lr_size), 
+        lr_small = F.interpolate(self.gt, size=(lr_size, lr_size), 
                                  mode='bicubic', align_corners=False)
         
         # Step 2: Upscale back to output size (512x512) with simple upscale
         lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
                                      mode='bicubic', align_corners=False)
         
-        # Step 3: Convert from [-1, 1] to [0, 1] for blending
-        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
-        canny_edge_01 = (canny_edge + 1.0) / 2.0
+        # Step 3: Conditional blending based on train_with_edge
+        if self.train_with_edge:
+            # Original behavior: blend LR upscaled + Canny edge
+            lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
+            canny_edge_01 = (canny_edge + 1.0) / 2.0
+            blended = self.blend_alpha * lr_upscaled_01 + self.blend_beta * canny_edge_01
+            blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
+            blended_image = blended * 2.0 - 1.0
+            blended_image = torch.clamp(blended_image, -1.0, 1.0)
+        else:
+            # New behavior: use only upscaled LR (no edge blending)
+            blended_image = lr_upscaled
+            blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
-        # Step 4: Two-parameter blending
-        # blend_alpha controls LR weight, blend_beta controls edge weight
-        blended = self.blend_alpha * lr_upscaled_01 + self.blend_beta * canny_edge_01
-        blended = torch.clamp(blended, 0.0, 1.0)  # Ensure [0, 1] range
-        
-        # Step 5: Convert back to [-1, 1] range
-        blended_image = blended * 2.0 - 1.0
-        blended_image = torch.clamp(blended_image, -1.0, 1.0)
-        
-        # Step 6: Encode the blended image to latent space
+        # Step 4: Encode the blended image to latent space
         encoder_posterior_blend = self.encode_first_stage(blended_image)
         z_blend = self.get_first_stage_encoding(encoder_posterior_blend).detach()
 
@@ -6974,31 +6981,34 @@ class LatentDiffusionSRTextWTFFHQ(LatentDiffusionSRTextWT):
         z_gt = self.get_first_stage_encoding(encoder_posterior_y).detach()
         
         # ========================================================================
-        # Create blended input: (1) LR downsampled & upscaled to output size + (2) Canny edge
+        # Create blended input: (1) LR downsampled from GT & upscaled + (2) Canny edge (optional)
         # ========================================================================
         
-        # Step 1: Downsample LQ based on downscale factor
+        # Step 1: Downsample GT to simulate LR input (more direct than re-downsampling self.lq)
         hr_size = self.gt.size(-1)  # Get HR size from ground truth (typically 512)
         lr_size = hr_size // self.lr_downscale_factor
-        lr_small = F.interpolate(self.lq, size=(lr_size, lr_size), 
+        lr_small = F.interpolate(self.gt, size=(lr_size, lr_size), 
                                  mode='bicubic', align_corners=False)
         
         # Step 2: Upscale back to output size
         lr_upscaled = F.interpolate(lr_small, size=(self.gt.size(-2), self.gt.size(-1)), 
                                      mode='bicubic', align_corners=False)
         
-        # Step 3: Convert from [-1, 1] to [0, 1] for blending
-        lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
-        canny_edge_01 = (canny_edge + 1.0) / 2.0
+        # Step 3: Conditional blending based on train_with_edge
+        if self.train_with_edge:
+            # Original behavior: blend LR upscaled + Canny edge
+            lr_upscaled_01 = (lr_upscaled + 1.0) / 2.0
+            canny_edge_01 = (canny_edge + 1.0) / 2.0
+            # Alpha blending (equivalent to cv2.addWeighted)
+            blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * canny_edge_01
+            blended_image = blended_image * 2.0 - 1.0
+            blended_image = torch.clamp(blended_image, -1.0, 1.0)
+        else:
+            # New behavior: use only upscaled LR (no edge blending)
+            blended_image = lr_upscaled
+            blended_image = torch.clamp(blended_image, -1.0, 1.0)
         
-        # Step 4: Alpha blending (equivalent to cv2.addWeighted)
-        blended_image = self.blend_alpha * lr_upscaled_01 + (1.0 - self.blend_alpha) * canny_edge_01
-        
-        # Step 5: Convert back to [-1, 1] range
-        blended_image = blended_image * 2.0 - 1.0
-        blended_image = torch.clamp(blended_image, -1.0, 1.0)
-        
-        # Step 6: Encode the blended image to latent space
+        # Step 4: Encode the blended image to latent space
         encoder_posterior_blend = self.encode_first_stage(blended_image)
         z_blend = self.get_first_stage_encoding(encoder_posterior_blend).detach()
 
