@@ -1,0 +1,18 @@
+python scripts/inference_blended_input_tile.py \
+    --lr-img /stablesr_dataset/weiqiang/lr_x16_240x135/0044.png \
+    --edge-img /stablesr_dataset/weiqiang/hr_4k_canny/0044.png \
+    --outdir outputs/blended_tile_0001_correct/ \
+    --config configs/stableSRNew/v2-finetune_text_T_512_canny_in.yaml \
+    --ckpt /root/dp/StableSR_Canny/logs/2025-10-21T01-21-28_stablesr_canny_in_20251021_012124/checkpoints/epoch=000194.ckpt \
+    --vqgan-ckpt /stablesr_dataset/checkpoints/vqgan_cfw_00011.ckpt \
+    --blend-alpha 0.5 \
+    --blend-beta 0.5 \
+    --lr-downscale-factor 16 \
+    --ddpm-steps 200 \
+    --tile-size 512 \
+    --tile-overlap 32 \
+    --seed 42 \
+    --text-prompt "" \
+    --colorfix adain \
+    --vqgan-tile-size 1024 \
+    --vqgan-tile-stride 512
