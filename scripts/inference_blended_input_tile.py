@@ -28,10 +28,33 @@ Usage:
         --tile-size 1280 \
         --tile-overlap 32
 
+    # Single image with pure black edge map (no edge conditioning)
+    python scripts/inference_blended_input_tile.py \
+        --lr-img inputs/lr_images/large_image.png \
+        --noedge \
+        --outdir outputs/blended_tile/ \
+        --config configs/stableSRNew/v2-finetune_text_T_512_canny_in.yaml \
+        --ckpt checkpoints/model.ckpt \
+        --vqgan-ckpt checkpoints/vqgan_model.ckpt \
+        --blend-alpha 0.5 \
+        --blend-beta 0.5 \
+        --ddpm-steps 200
+
     # Batch processing with tiling
     python scripts/inference_blended_input_tile.py \
         --lr-img inputs/lr_images/ \
         --edge-img inputs/edges_512/ \
+        --outdir outputs/batch_tile/ \
+        --config configs/stableSRNew/v2-finetune_text_T_512_canny_in.yaml \
+        --ckpt checkpoints/model.ckpt \
+        --vqgan-ckpt checkpoints/vqgan_model.ckpt \
+        --batch-mode \
+        --tile-size 1280
+
+    # Batch processing with pure black edge maps
+    python scripts/inference_blended_input_tile.py \
+        --lr-img inputs/lr_images/ \
+        --noedge \
         --outdir outputs/batch_tile/ \
         --config configs/stableSRNew/v2-finetune_text_T_512_canny_in.yaml \
         --ckpt checkpoints/model.ckpt \
@@ -188,6 +211,26 @@ def load_edge_map(path, height=512, width=512):
     return edge
 
 
+def create_black_edge_map(height=512, width=512):
+    """
+    Create a pure black edge map for when --noedge is used
+    
+    Args:
+        height: Target height for edge map (default 512)
+        width: Target width for edge map (default 512)
+    
+    Returns:
+        Tensor of shape [1, 3, height, width] in range [-1, 1] (all values are -1.0)
+    """
+    # Create pure black tensor (all zeros in [0,1] range, which becomes -1 in [-1,1] range)
+    edge = torch.zeros(1, 3, height, width)
+    
+    # Normalize to [-1, 1] (black becomes -1.0)
+    edge = 2.0 * edge - 1.0
+    
+    return edge
+
+
 def create_blended_input_tiled(lr_image, edge_map, blend_alpha=0.5, blend_beta=0.5, output_h=512, output_w=512):
     """
     Create blended image from LR and edge map for tiled processing
@@ -310,7 +353,7 @@ def inference_single_image_tiled(
     model,
     vq_model,
     lr_image_path,
-    edge_map_path,
+    edge_map_path=None,
     blend_alpha=0.5,
     blend_beta=0.5,
     lr_downscale_factor=16,
@@ -324,7 +367,8 @@ def inference_single_image_tiled(
     vqgan_tile_size=1280,
     vqgan_tile_stride=320,
     dec_w=0.5,
-    start_from_noise=False
+    start_from_noise=False,
+    use_noedge=False
 ):
     """
     Run tiled inference on a single image pair with blended input
@@ -333,7 +377,7 @@ def inference_single_image_tiled(
         model: StableSR model
         vq_model: VQGAN model
         lr_image_path: Path to LR image (will be resized based on downscale factor)
-        edge_map_path: Path to edge map (will be resized to output_size)
+        edge_map_path: Path to edge map (will be resized to output_size, ignored if use_noedge=True)
         blend_alpha: Blending weight for LR upscaled image
         blend_beta: Blending weight for edge map
         lr_downscale_factor: Downscale factor for LR (e.g., 16 means 512/16=32x32)
@@ -348,6 +392,7 @@ def inference_single_image_tiled(
         vqgan_tile_stride: Stride for VQGAN tile operation (in pixels)
         dec_w: Weight for combining VQGAN and Diffusion
         start_from_noise: If True, start from pure noise; else start from noisy z_blend
+        use_noedge: If True, use pure black image as edge map instead of loading edge_map_path
     
     Returns:
         output_image: PIL Image
@@ -378,7 +423,10 @@ def inference_single_image_tiled(
     print("Tiled Inference with Blended Input")
     print(f"{'='*60}")
     print(f"LR image: {os.path.basename(lr_image_path)}")
-    print(f"Edge map: {os.path.basename(edge_map_path)}")
+    if use_noedge:
+        print(f"Edge map: Pure black image (--noedge)")
+    else:
+        print(f"Edge map: {os.path.basename(edge_map_path)}")
     print(f"Blend alpha: {blend_alpha}")
     print(f"Blend beta: {blend_beta}")
     print(f"Original LR size: {orig_w}x{orig_h}")
@@ -394,7 +442,13 @@ def inference_single_image_tiled(
     # 1. Load inputs
     print("Step 1/8: Loading LR image and edge map...")
     lr_image = load_lr_image_with_dimensions(lr_image_path, height=lr_height, width=lr_width).to(device)
-    edge_map = load_edge_map(edge_map_path, height=output_h, width=output_w).to(device)
+    
+    if use_noedge:
+        print("  Using pure black edge map (--noedge)")
+        edge_map = create_black_edge_map(height=output_h, width=output_w).to(device)
+    else:
+        edge_map = load_edge_map(edge_map_path, height=output_h, width=output_w).to(device)
+    
     print(f"  LR image shape: {lr_image.shape}")
     print(f"  Edge map shape: {edge_map.shape}")
     
@@ -619,10 +673,11 @@ def batch_inference_tiled(
     model,
     vq_model,
     lr_dir,
-    edge_dir,
     output_dir,
+    edge_dir=None,
     blend_alpha=0.5,
     blend_beta=0.5,
+    use_noedge=False,
     **kwargs
 ):
     """
@@ -632,25 +687,30 @@ def batch_inference_tiled(
     lr_images = sorted(glob.glob(os.path.join(lr_dir, "*.png")) + 
                       glob.glob(os.path.join(lr_dir, "*.jpg")))
     
-    # Find corresponding edge maps
-    edge_images = []
-    for lr_path in lr_images:
-        basename = os.path.basename(lr_path)
-        edge_path = os.path.join(edge_dir, basename)
-        if not os.path.exists(edge_path):
-            # Try with different extension
-            name_no_ext = os.path.splitext(basename)[0]
-            edge_path = os.path.join(edge_dir, name_no_ext + ".png")
+    if use_noedge:
+        print(f"\nFound {len(lr_images)} LR images")
+        print("Using pure black edge maps for all images (--noedge)")
+        edge_images = [None] * len(lr_images)  # None will be handled in the processing loop
+    else:
+        # Find corresponding edge maps
+        edge_images = []
+        for lr_path in lr_images:
+            basename = os.path.basename(lr_path)
+            edge_path = os.path.join(edge_dir, basename)
             if not os.path.exists(edge_path):
-                print(f"Warning: No edge map found for {basename}, skipping...")
-                continue
-        edge_images.append(edge_path)
-    
-    print(f"\nFound {len(lr_images)} LR images and {len(edge_images)} edge maps")
-    
-    if len(lr_images) != len(edge_images):
-        print("Warning: Mismatch in number of LR images and edge maps!")
-        lr_images = lr_images[:len(edge_images)]
+                # Try with different extension
+                name_no_ext = os.path.splitext(basename)[0]
+                edge_path = os.path.join(edge_dir, name_no_ext + ".png")
+                if not os.path.exists(edge_path):
+                    print(f"Warning: No edge map found for {basename}, skipping...")
+                    continue
+            edge_images.append(edge_path)
+        
+        print(f"\nFound {len(lr_images)} LR images and {len(edge_images)} edge maps")
+        
+        if len(lr_images) != len(edge_images):
+            print("Warning: Mismatch in number of LR images and edge maps!")
+            lr_images = lr_images[:len(edge_images)]
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -671,6 +731,7 @@ def batch_inference_tiled(
                 edge_path,
                 blend_alpha=blend_alpha,
                 blend_beta=blend_beta,
+                use_noedge=use_noedge,
                 **kwargs
             )
             
@@ -716,8 +777,10 @@ def main():
     # Input arguments
     parser.add_argument("--lr-img", type=str, required=True,
                        help="Path to LR image file or directory")
-    parser.add_argument("--edge-img", type=str, required=True,
-                       help="Path to edge map file or directory")
+    parser.add_argument("--edge-img", type=str, required=False,
+                       help="Path to edge map file or directory (not required if --noedge is set)")
+    parser.add_argument("--noedge", action="store_true",
+                       help="Use pure black image as edge map instead of loading edge image")
     parser.add_argument("--outdir", type=str, default="outputs/blended_tile/",
                        help="Output directory for results")
     
@@ -792,8 +855,17 @@ def main():
     # Create output directory
     os.makedirs(args.outdir, exist_ok=True)
     
+    # Validate --noedge parameter
+    if args.noedge and args.edge_img:
+        print("❌ Error: Cannot specify both --noedge and --edge-img. Use --noedge to use pure black edge maps.")
+        return
+    
+    if not args.noedge and not args.edge_img:
+        print("❌ Error: Must specify either --edge-img or --noedge parameter.")
+        return
+    
     # Auto-detect batch mode if directories are provided
-    if os.path.isdir(args.lr_img) and os.path.isdir(args.edge_img):
+    if os.path.isdir(args.lr_img) and (args.noedge or (args.edge_img and os.path.isdir(args.edge_img))):
         if not args.batch_mode:
             print("📁 Detected directory inputs - automatically enabling batch mode")
             args.batch_mode = True
@@ -803,7 +875,7 @@ def main():
         print(f"❌ Error: --lr-img must be a directory in batch mode, got: {args.lr_img}")
         return
     
-    if args.batch_mode and not os.path.isdir(args.edge_img):
+    if args.batch_mode and not args.noedge and not os.path.isdir(args.edge_img):
         print(f"❌ Error: --edge-img must be a directory in batch mode, got: {args.edge_img}")
         return
     
@@ -814,10 +886,11 @@ def main():
             model,
             vq_model,
             args.lr_img,
-            args.edge_img,
             args.outdir,
+            edge_dir=args.edge_img,
             blend_alpha=args.blend_alpha,
             blend_beta=args.blend_beta,
+            use_noedge=args.noedge,
             lr_downscale_factor=args.lr_downscale_factor,
             output_size=args.output_size,
             ddpm_steps=args.ddpm_steps,
@@ -851,7 +924,8 @@ def main():
             vqgan_tile_size=args.vqgan_tile_size,
             vqgan_tile_stride=args.vqgan_tile_stride,
             dec_w=args.dec_w,
-            start_from_noise=args.start_from_noise
+            start_from_noise=args.start_from_noise,
+            use_noedge=args.noedge
         )
         
         # Save main output
