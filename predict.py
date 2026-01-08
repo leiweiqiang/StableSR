@@ -63,7 +63,7 @@ def generate_edge_map(image_tensor):
         # Convert to float and normalize to [-1, 1]
         edges_rgb = edges_rgb.astype(np.float32) / 255.0
         edges_rgb = torch.from_numpy(edges_rgb).permute(2, 0, 1)  # (3, H, W)
-        edges_rgb = edges_rgb * 2.0 - 1.0
+        # edges_rgb = edges_rgb * 2.0 - 1.0
         
         edge_maps.append(edges_rgb)
     
