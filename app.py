@@ -155,7 +155,7 @@ vq_model = vq_model.to(device)
 
 os.makedirs('output', exist_ok=True)
 
-def inference(image, upscale, dec_w, seed, model_type, ddpm_steps, colorfix_type):
+def inference(image, image2, upscale, dec_w, seed, model_type, ddpm_steps, colorfix_type):
 	"""Run a single prediction on the model"""
 	precision_scope = autocast
 	vq_model.decoder.fusion_w = dec_w
@@ -200,6 +200,13 @@ def inference(image, upscale, dec_w, seed, model_type, ddpm_steps, colorfix_type
 				with precision_scope("cuda"):
 					with model.ema_scope():
 						init_image = load_img(image)
+						if image2 is not None:
+							init_image_2 = load_img(image2)
+							if init_image_2.shape[-2:] != init_image.shape[-2:]:
+								init_image_2 = F.interpolate(
+									init_image_2, size=init_image.shape[-2:], mode='bicubic'
+									)
+							init_image = 0.5 * init_image + 0.5 * init_image_2
 						init_image = F.interpolate(
 									init_image,
 									size=(int(init_image.size(-2)*upscale),
@@ -332,7 +339,8 @@ If you have any questions, please feel free to reach me out at <b>iceclearwjy@gm
 
 demo = gr.Interface(
 	inference, [
-		gr.inputs.Image(type="filepath", label="Input"),
+		gr.inputs.Image(type="filepath", label="Input_1"),
+		gr.inputs.Image(type="filepath", label="Input_2 (optional)"),
 		gr.inputs.Number(default=1, label="Rescaling_Factor (Large images require huge time)"),
 		gr.Slider(0, 1, value=0.5, step=0.01, label='CFW_Fidelity (0 for better quality, 1 for better identity)'),
 		gr.inputs.Number(default=42, label="Seeds"),
@@ -355,11 +363,11 @@ demo = gr.Interface(
 	description=description,
 	article=article,
 	examples=[
-		['./01.png', 4, 0.5, 42, "512", 200, "adain"],
-		['./02.png', 4, 0.5, 42, "512", 200, "adain"],
-		['./03.png', 4, 0.5, 42, "512", 200, "adain"],
-		['./04.png', 4, 0.5, 42, "512", 200, "adain"],
-		['./05.png', 4, 0.5, 42, "512", 200, "adain"]
+		['./01.png', None, 4, 0.5, 42, "512", 200, "adain"],
+		['./02.png', None, 4, 0.5, 42, "512", 200, "adain"],
+		['./03.png', None, 4, 0.5, 42, "512", 200, "adain"],
+		['./04.png', None, 4, 0.5, 42, "512", 200, "adain"],
+		['./05.png', None, 4, 0.5, 42, "512", 200, "adain"]
 		]
 	)
 

@@ -6,6 +6,7 @@ results/
 wandb/
 output/
 weights/
+refix/
 
 *.DS_Store
 .idea
@@ -133,3 +134,4 @@ venv.bak/
 .mypy_cache/
 
 outputs/
+refix/bin/2to3

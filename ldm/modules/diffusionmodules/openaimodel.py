@@ -1330,7 +1330,20 @@ class UNetModelDualcondV2(nn.Module):
             hs.append(h)
         h = self.middle_block(h, emb, context, struct_cond)
         for module in self.output_blocks:
-            h = th.cat([h, hs.pop()], dim=1)
+            skip = hs.pop()
+            if h.shape[2:] != skip.shape[2:]:
+                thh, thw = h.shape[2], h.shape[3]
+                sh, sw = skip.shape[2], skip.shape[3]
+                if sh >= thh and sw >= thw:
+                    top = (sh - thh) // 2
+                    left = (sw - thw) // 2
+                    skip = skip[:, :, top:top + thh, left:left + thw]
+                else:
+                    pad_h = max(thh - sh, 0)
+                    pad_w = max(thw - sw, 0)
+                    pad = [pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2]
+                    skip = F.pad(skip, pad)
+            h = th.cat([h, skip], dim=1)
             h = module(h, emb, context, struct_cond)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:

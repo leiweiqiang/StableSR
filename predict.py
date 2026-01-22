@@ -2,6 +2,7 @@
 # https://github.com/replicate/cog/blob/main/docs/python.md
 
 import os
+from typing import Optional
 import PIL
 import numpy as np
 import copy
@@ -43,6 +44,9 @@ class Predictor(BasePredictor):
     def predict(
         self,
         input_image: Path = Input(description="Input image"),
+        input_image_2: Optional[Path] = Input(
+            description="Second input image (optional)", default=None
+        ),
         ddpm_steps: int = Input(
             description="Number of DDPM steps for sampling", default=200
         ),
@@ -80,6 +84,13 @@ class Predictor(BasePredictor):
         device = torch.device("cuda")
 
         cur_image = load_img(str(input_image)).to(device)
+        if input_image_2 is not None:
+            cur_image_2 = load_img(str(input_image_2)).to(device)
+            if cur_image_2.shape[-2:] != cur_image.shape[-2:]:
+                cur_image_2 = F.interpolate(
+                    cur_image_2, size=cur_image.shape[-2:], mode="bicubic"
+                )
+            cur_image = 0.5 * cur_image + 0.5 * cur_image_2
         cur_image = F.interpolate(
             cur_image,
             size=(int(cur_image.size(-2) * upscale), int(cur_image.size(-1) * upscale)),
